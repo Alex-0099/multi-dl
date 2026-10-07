@@ -61,6 +61,24 @@ class URLRouter:
         # telegram-dl
         "t.me": "telegram-dl",
         "telegram.me": "telegram-dl",
+
+        # terabox-dl
+        "terabox.com": "terabox-dl",
+        "www.terabox.com": "terabox-dl",
+        "1024tera.com": "terabox-dl",
+        "www.1024tera.com": "terabox-dl",
+        "teraboxlink.com": "terabox-dl",
+        "www.teraboxlink.com": "terabox-dl",
+        "freeterabox.com": "terabox-dl",
+        "www.freeterabox.com": "terabox-dl",
+        "mirrobox.com": "terabox-dl",
+        "www.mirrobox.com": "terabox-dl",
+        "nephobox.com": "terabox-dl",
+        "www.nephobox.com": "terabox-dl",
+        "4funbox.com": "terabox-dl",
+        "www.4funbox.com": "terabox-dl",
+        "teraboxapp.com": "terabox-dl",
+        "www.teraboxapp.com": "terabox-dl",
     }
 
     def __init__(self, backends: Optional[Dict[str, BaseBackend]] = None):
@@ -130,6 +148,11 @@ class URLRouter:
         # YouTube specific normalization (youtube.com, youtu.be -> youtube)
         if "youtube" in domain or "youtu.be" in domain:
             return "youtube"
+
+        # TeraBox specific normalization
+        if any(d in domain for d in ("terabox", "1024tera", "mirrobox", "nephobox", "4funbox")):
+            return "terabox"
+
 
         # General domain simplification (e.g. www.twitter.com -> twitter)
         parts = domain.split(".")

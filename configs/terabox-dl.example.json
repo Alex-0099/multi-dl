@@ -1,0 +1,19 @@
+{
+  "// ─── MULTI_DOWNLOADER: Terabox-dl Modular Configuration ───": "",
+  "// Place your ndus cookie here, or set TERABOX_NDUS in your .env file": "",
+  "ndus_cookie": "",
+  "// Path to a custom .env file containing TERABOX_NDUS (defaults to checking ~/.env or ~/Terabox-dl/.env)": "",
+  "env_file": null,
+  "// Maximum download retry attempts": "",
+  "max_retries": 10,
+  "// Resume partially downloaded files using HTTP Range headers": "",
+  "resume": true,
+  "// Network request timeout in seconds": "",
+  "timeout": 30,
+  "// Streaming buffer chunk size in KB": "",
+  "chunk_size_kb": 64,
+  "// HTTP User-Agent string": "",
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "// TeraBox Application ID": "",
+  "app_id": "250528"
+}

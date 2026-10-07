@@ -30,3 +30,14 @@ class ArchiveDuplicateError(MultiDLError):
 class ConfigError(MultiDLError):
     """Raised when there is an issue loading or validating configuration settings."""
     pass
+
+
+class EngineNotFoundError(MultiDLError):
+    """Raised when an external or submodule engine is missing."""
+    pass
+
+
+class AuthenticationError(MultiDLError):
+    """Raised when authentication credentials (cookie/token) are required or invalid."""
+    pass
+

@@ -36,6 +36,7 @@ except (ValueError, AttributeError):
 
 from backends.gallerydl_backend import GalleryDlBackend
 from backends.telegram_backend import TelegramDlBackend
+from backends.terabox_backend import TeraboxDlBackend
 from backends.ytdlp_backend import YtDlpBackend
 from core.archive import ArchiveManager
 from core.config import ConfigManager
@@ -92,11 +93,13 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
     ytdlp = YtDlpBackend(config.get_backend_config("yt-dlp"))
     gallerydl = GalleryDlBackend(config.get_backend_config("gallery-dl"))
     telegram = TelegramDlBackend(config.get_backend_config("telegram-dl"))
+    terabox = TeraboxDlBackend(config.get_backend_config("terabox-dl"))
 
     router = URLRouter()
     router.register_backend(ytdlp)
     router.register_backend(gallerydl)
     router.register_backend(telegram)
+    router.register_backend(terabox)
 
     try:
         backend = router.route(url, backend_override=backend_name)
@@ -205,6 +208,7 @@ def main():
         direct_parser.add_argument("--cookies-from-browser", help="Load cookies from browser (e.g. chrome, firefox, edge, brave, opera)")
         direct_parser.add_argument("--cookies", help="Path to cookies.txt file")
         direct_parser.add_argument("--format", "-f", help="Format selection string (e.g. bestvideo*+bestaudio/best)")
+        direct_parser.add_argument("--ndus", help="TeraBox ndus session cookie")
         parsed_direct = direct_parser.parse_args()
 
         opts = {}
@@ -214,6 +218,8 @@ def main():
             opts["cookies"] = parsed_direct.cookies
         if parsed_direct.format:
             opts["format"] = parsed_direct.format
+        if parsed_direct.ndus:
+            opts["ndus"] = parsed_direct.ndus
 
         asyncio.run(download_url(parsed_direct.url, parsed_direct.backend, options=opts))
         return
@@ -229,10 +235,11 @@ def main():
     # Optional 'download' subcommand (for backward compatibility)
     dl_parser = subparsers.add_parser("download", help="Download a URL (optional, you can just pass the URL directly)")
     dl_parser.add_argument("url", help="Media URL to download")
-    dl_parser.add_argument("--backend", "-b", help="Force specific backend (yt-dlp, gallery-dl, telegram-dl)")
+    dl_parser.add_argument("--backend", "-b", help="Force specific backend (yt-dlp, gallery-dl, terabox-dl, telegram-dl)")
     dl_parser.add_argument("--cookies-from-browser", help="Load cookies from browser (e.g. chrome, firefox, edge, brave)")
     dl_parser.add_argument("--cookies", help="Path to cookies.txt file")
     dl_parser.add_argument("--format", "-f", help="Format selection string")
+    dl_parser.add_argument("--ndus", help="TeraBox ndus session cookie")
 
     # 'update' command
     up_parser = subparsers.add_parser("update", help="Update download engines to their latest versions")
@@ -267,6 +274,8 @@ def main():
             sub_opts["cookies"] = args.cookies
         if getattr(args, "format", None):
             sub_opts["format"] = args.format
+        if getattr(args, "ndus", None):
+            sub_opts["ndus"] = args.ndus
         asyncio.run(download_url(args.url, args.backend, options=sub_opts))
     elif args.command == "route":
         config = ConfigManager()
@@ -274,6 +283,7 @@ def main():
             "yt-dlp": YtDlpBackend(),
             "gallery-dl": GalleryDlBackend(),
             "telegram-dl": TelegramDlBackend(),
+            "terabox-dl": TeraboxDlBackend(),
         })
         try:
             b = router.route(args.url)

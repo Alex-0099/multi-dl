@@ -13,12 +13,16 @@ ENV/
 *.session-journal
 .env
 configs/gallery-dl.json
+configs/terabox-dl.json
 cookies/
 *cookies*.txt
 
 # Runtime data & downloads
 downloads/
 data/archive.db
+data/*.sqlite3
+data/*.db
+data/archives/
 data/queue.json
 *.log
 

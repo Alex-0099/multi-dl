@@ -77,3 +77,18 @@ def test_gallerydl_batch_tracker(tmp_path):
     tracker.finish()
 
 
+def test_gallerydl_nested_album_metadata():
+    """Verify extractors like Pixeldrain that store count inside album dict are detected."""
+    from backends.gallerydl_backend import _GalleryDlBatchTracker
+
+    tracker = _GalleryDlBatchTracker()
+    tracker.on_directory({"album": {"title": "G1", "count": 12}})
+    assert tracker.total_files == 12
+    assert tracker.title_announced is True
+
+    # Verify visible length calculation ignores ANSI and handles wide characters
+    sample = "\033[36m📥\033[0m [\033[36m 50.0%\033[0m]"
+    assert tracker._visible_len(sample) == 11
+
+
+
