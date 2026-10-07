@@ -43,6 +43,7 @@ from core.exceptions import MultiDLError
 from core.models import DownloadProgress, DownloadTask, TaskStatus
 from core.queue_manager import QueueManager
 from core.router import URLRouter
+from core.updater import EngineUpdater
 
 
 def format_bytes(size: int) -> str:
@@ -159,11 +160,42 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
 
 
 def main():
-    # If the first argument looks like a URL or option, handle direct download mode
     raw_args = sys.argv[1:]
-    
+
+    # Fast-path for Update command / flag: multi-dl -U / multi-dl --update / multi-dl update [engine]
+    if any(arg in ("-U", "--update") for arg in raw_args) or (raw_args and raw_args[0] == "update"):
+        remaining = [a for a in raw_args if a not in ("-U", "--update", "update")]
+        target = remaining[0].lower() if remaining else "all"
+        updater = EngineUpdater()
+        if target in ("all", ""):
+            updater.update_all()
+        elif target in ("yt-dlp", "ytdlp"):
+            ok, msg = updater.update_ytdlp()
+            print(f"yt-dlp: {msg}")
+        elif target in ("gallery-dl", "gallerydl"):
+            ok, msg = updater.update_gallerydl()
+            print(f"gallery-dl: {msg}")
+        elif target in ("curl_cffi", "curlcffi"):
+            ok, msg = updater.update_curl_cffi()
+            print(f"curl_cffi: {msg}")
+        elif target in ("telegram-dl", "telegramdl", "telegram"):
+            ok, msg = updater.update_telegramdl()
+            print(f"Telegram-dl: {msg}")
+        elif target in ("terabox-dl", "teraboxdl", "terabox"):
+            ok, msg = updater.update_teraboxdl()
+            print(f"Terabox-dl: {msg}")
+        elif target in ("cyberdrop-dl", "cyberdropdl", "cyberdrop"):
+            ok, msg = updater.update_cyberdropdl()
+            print(f"cyberdrop-dl: {msg}")
+        elif target in ("multi-dl", "self"):
+            ok, msg = updater.update_self()
+            print(f"MULTI_DOWNLOADER: {msg}")
+        else:
+            print(f"{Style.tag('❌', 'UNKNOWN', Style.RED)} Unknown engine '{target}'. Use: yt-dlp, gallery-dl, terabox-dl, telegram-dl, curl_cffi, or all.")
+        return
+
     # Subcommands list
-    subcommands = {"archive", "route", "queue", "config"}
+    subcommands = {"archive", "route", "queue", "config", "update"}
 
     # Direct URL mode: e.g. python multi-dl.py https://... [--backend yt-dlp] [--cookies-from-browser chrome]
     if raw_args and raw_args[0] not in subcommands and not raw_args[0].startswith("-h") and not raw_args[0] == "--help":
@@ -191,6 +223,7 @@ def main():
         description="MULTI_DOWNLOADER CLI - Universal Media Downloader",
         epilog="Tip: You can download directly with: python multi-dl.py <URL>"
     )
+    parser.add_argument("-U", "--update", action="store_true", help="Update all download engines to their latest versions")
     subparsers = parser.add_subparsers(dest="command")
 
     # Optional 'download' subcommand (for backward compatibility)
@@ -200,6 +233,10 @@ def main():
     dl_parser.add_argument("--cookies-from-browser", help="Load cookies from browser (e.g. chrome, firefox, edge, brave)")
     dl_parser.add_argument("--cookies", help="Path to cookies.txt file")
     dl_parser.add_argument("--format", "-f", help="Format selection string")
+
+    # 'update' command
+    up_parser = subparsers.add_parser("update", help="Update download engines to their latest versions")
+    up_parser.add_argument("engine", nargs="?", default="all", help="Specific engine to update (all, yt-dlp, gallery-dl, terabox-dl, telegram-dl)")
 
     # 'archive' command
     arc_parser = subparsers.add_parser("archive", help="Inspect download archive")
@@ -212,7 +249,17 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "download":
+    if getattr(args, "update", False) or args.command == "update":
+        target = getattr(args, "engine", "all")
+        updater = EngineUpdater()
+        if target == "all":
+            updater.update_all()
+        else:
+            # Delegate to specific engine
+            remaining = [target]
+            # Call same logic
+            updater.update_all()
+    elif args.command == "download":
         sub_opts = {}
         if getattr(args, "cookies_from_browser", None):
             sub_opts["cookies_from_browser"] = args.cookies_from_browser

@@ -4,6 +4,7 @@ Ensures config isolation by resetting memory config state and loading from modul
 """
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -19,6 +20,25 @@ from backends.base import BaseBackend
 from core.exceptions import DownloadFailedError
 from core.models import ArchiveEntry, DownloadProgress, DownloadTask, MediaType
 from core.terminal import Style, format_bytes
+
+
+class _GalleryDlLogHandler(logging.Handler):
+    """Formats gallery-dl internal logs to match MULTI_DOWNLOADER terminal tags and styling."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage()
+            # Suppress benign netrc warning if it ever appears
+            if "netrc" in msg.lower() and "no authentication info" in msg.lower():
+                return
+
+            if record.levelno >= logging.ERROR:
+                sys.stdout.write(f"\r\033[K{Style.tag('❌', 'ERROR', Style.RED)} {Style.error(msg)}\n")
+            elif record.levelno >= logging.WARNING:
+                sys.stdout.write(f"\r\033[K{Style.tag('⚠️', 'WARNING', Style.YELLOW)} {Style.warning(msg)}\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 
 class _GalleryDlBatchTracker:
@@ -269,6 +289,14 @@ class GalleryDlBackend(BaseBackend):
         # Pause gallery-dl internal sqlite archives during test mode if requested
         if disable_archive:
             gdl_config.set(("extractor",), "archive", None)
+
+        # Disable netrc lookups to prevent unwanted 'No authentication info' warnings
+        gdl_config.set((), "netrc", False)
+
+        # Route gallery-dl logger through MULTI_DOWNLOADER terminal handler
+        gdl_logger = logging.getLogger("gallery-dl")
+        gdl_logger.handlers = [_GalleryDlLogHandler()]
+        gdl_logger.propagate = False
 
     def can_handle(self, url: str) -> bool:
         """Query gallery-dl's extractor registry for support."""

@@ -78,6 +78,7 @@
             ],
             "api-key": "",
             "directory": [
+                "{category}",
                 "{model_name}",
                 "{user['username']}"
             ],
@@ -93,6 +94,7 @@
         "comick": {
             "browser": "chrome",
             "directory": [
+                "{category}",
                 "{manga}",
                 "{chapter:>03} - {title}"
             ],
@@ -339,6 +341,7 @@
             "refresh-token": "",
             "include": "artworks",
             "directory": [
+                "{category}",
                 "{user[id]} - {user[name]}"
             ],
             "embeds": false,
@@ -549,5 +552,5 @@
     "cache": {
         "file": "data/cache.sqlite3"
     },
-    "netrc": true
+    "netrc": false
 }

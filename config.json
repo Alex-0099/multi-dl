@@ -48,10 +48,18 @@
         "api_id": "",
         "api_hash": "",
         "session_name": "telegram_dl_session",
+        "github_repo": "https://github.com/Alex-0099/Telegram-dl.git",
         "media_types": ["photo", "video", "document"],
         "min_file_size_mb": 0,
         "max_file_size_mb": 0,
         "organize_by_chat": true,
         "organize_by_type": true
+    },
+    "terabox_dl": {
+        "github_repo": "https://github.com/Alex-0099/Terabox-DL.git",
+        "ndus_cookie": "",
+        "chunk_size_mb": 4,
+        "max_threads": 4,
+        "auto_unpack": false
     }
 }

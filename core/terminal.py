@@ -48,6 +48,7 @@ class Style:
         "yt-dlp": "\033[91m",       # YouTube Red
         "gallery-dl": "\033[93m",    # Gallery Amber / Yellow
         "telegram-dl": "\033[94m",   # Telegram Blue
+        "terabox-dl": "\033[96m",    # TeraBox Cyan
         "cyberdrop-dl": "\033[95m",  # Cyberdrop Magenta
     }
 
