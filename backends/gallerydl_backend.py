@@ -6,6 +6,7 @@ Ensures config isolation by resetting memory config state and loading from modul
 import asyncio
 import os
 from pathlib import Path
+import shutil
 import sys
 from typing import Any, Callable, Dict, List, Optional
 import uuid
@@ -17,58 +18,220 @@ from gallery_dl import job
 from backends.base import BaseBackend
 from core.exceptions import DownloadFailedError
 from core.models import ArchiveEntry, DownloadProgress, DownloadTask, MediaType
-from core.terminal import Style
+from core.terminal import Style, format_bytes
 
 
-class _GalleryDlOutputTracker:
-    """Proxies gallery-dl output writer to track downloaded files and trigger progress callbacks."""
+class _GalleryDlBatchTracker:
+    """
+    Renders an in-place dual progress bar for gallery-dl downloads:
+    Line 1 (Top): Batch / Gallery progress (e.g. 45/464 images downloaded)
+    Line 2 (Bottom): Current file progress (speed, ETA, sizes, filename)
+    """
 
-    def __init__(self, original_out: Any, progress_callback: Optional[Callable[[DownloadProgress], None]] = None):
-        self._orig = original_out
+    def __init__(self, progress_callback: Optional[Callable[[DownloadProgress], None]] = None):
         self.progress_callback = progress_callback
+        self.total_files: Optional[int] = None
+        self.completed_count: int = 0
+        self.skipped_count: int = 0
         self.downloaded_files: List[str] = []
+        self._file_bytes: Dict[str, int] = {}
+
+        # Current file metrics
+        self.current_filename: str = ""
+        self.current_downloaded: int = 0
+        self.current_total: Optional[int] = None
+        self.current_speed: Optional[float] = None
+
+        self.title_announced: bool = False
+        self._lines_printed: int = 0
+        self._is_tty: bool = sys.stdout.isatty() if hasattr(sys.stdout, "isatty") else True
+
+    def on_directory(self, kwdict: Dict[str, Any]) -> None:
+        """Called when gallery metadata is resolved before downloads begin."""
+        count = kwdict.get("count") or kwdict.get("total")
+        if count and not self.total_files:
+            try:
+                self.total_files = int(count)
+            except (ValueError, TypeError):
+                pass
+
+        title = kwdict.get("title")
+        if title and not self.title_announced:
+            self.title_announced = True
+            sys.stdout.write(f"\r\033[K{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(title)}\n")
+            if self.total_files:
+                sys.stdout.write(f"\r\033[K{Style.tag('📦', 'BATCH', Style.MAGENTA)} Detected {Style.cyan(str(self.total_files))} files in gallery\n")
+            sys.stdout.flush()
+
+    def on_url(self, url: str, kwdict: Dict[str, Any]) -> None:
+        """Called for each queued image URL."""
+        if not self.total_files and kwdict.get("count"):
+            try:
+                self.total_files = int(kwdict["count"])
+            except (ValueError, TypeError):
+                pass
+
+        fname = kwdict.get("filename")
+        if fname:
+            self.current_filename = str(fname)
+        self.current_downloaded = 0
+        self.current_total = None
+        self.current_speed = None
+
+    def start(self, path: str) -> None:
+        """Called when download starts for a specific file."""
+        self.current_filename = Path(path).name
+        self.current_downloaded = 0
+        self.current_total = None
+        self.current_speed = None
+        self._render()
+
+    def progress(self, bytes_total: Optional[int], bytes_downloaded: int, bytes_per_second: int) -> None:
+        """Called with live byte stream progress for the current file."""
+        self.current_total = bytes_total
+        self.current_downloaded = bytes_downloaded
+        self.current_speed = float(bytes_per_second) if bytes_per_second else None
+        if self.current_filename:
+            self._file_bytes[self.current_filename] = bytes_downloaded
+        self._render()
 
     def success(self, path: str) -> None:
+        """Called when a file completes downloading successfully."""
         self.downloaded_files.append(path)
+        self.completed_count += 1
         p = Path(path)
-        sys.stdout.write(f"\r\033[K{Style.tag('📷', 'SAVED', Style.GREEN)} {Style.white(p.name)}\n")
-        sys.stdout.flush()
+        self.current_filename = p.name
+        if p.exists():
+            self.current_total = p.stat().st_size
+            self.current_downloaded = self.current_total
+            self._file_bytes[p.name] = self.current_total
+        self._render()
 
         if self.progress_callback:
             prog = DownloadProgress(
                 file_index=len(self.downloaded_files),
                 current_file=p.name,
-                downloaded_bytes=p.stat().st_size if p.exists() else 0,
+                downloaded_bytes=self.current_downloaded,
+                total_bytes=self.current_total,
             )
             self.progress_callback(prog)
 
-        if self._orig and hasattr(self._orig, "success"):
-            try:
-                self._orig.success(path)
-            except Exception:
-                pass
-
     def skip(self, path: str) -> None:
+        """Called when an existing or archived file is skipped."""
+        self.skipped_count += 1
+        self.completed_count += 1
         p = Path(path)
-        sys.stdout.write(f"\r\033[K{Style.tag('⏭️', 'SKIPPED', Style.GRAY)} {Style.muted(p.name)} {Style.dim('(already exists / archived)')}\n")
-        sys.stdout.flush()
-        if self._orig and hasattr(self._orig, "skip"):
-            try:
-                self._orig.skip(path)
-            except Exception:
-                pass
+        self.current_filename = p.name
+        if p.exists():
+            self._file_bytes[p.name] = p.stat().st_size
+        self._render()
 
     def error(self, msg: str) -> None:
+        """Called on gallery-dl error."""
         sys.stdout.write(f"\r\033[K{Style.tag('❌', 'GALLERY-DL ERROR', Style.RED)} {Style.red(msg)}\n")
+        self._lines_printed = 0
         sys.stdout.flush()
-        if self._orig and hasattr(self._orig, "error"):
-            try:
-                self._orig.error(msg)
-            except Exception:
-                pass
+
+    def finish(self) -> None:
+        """Finalizes the dual progress display when download completes."""
+        self._render(done=True)
+
+    def _render(self, done: bool = False) -> None:
+        term_width = shutil.get_terminal_size((80, 24)).columns
+
+        # --- Line 1: Batch / Gallery Progress ---
+        if self.total_files and self.total_files > 0:
+            batch_pct = (self.completed_count / self.total_files) * 100.0
+            batch_pct_text = f"{batch_pct:5.1f}%"
+            batch_bar = Style.progress_bar(batch_pct, width=16)
+            batch_count = f"{self.completed_count}/{self.total_files} files"
+        else:
+            batch_pct = None
+            batch_pct_text = "  --% "
+            batch_bar = Style.progress_bar(None, width=16)
+            batch_count = f"{self.completed_count} files"
+
+        total_batch_bytes = sum(self._file_bytes.values())
+        if total_batch_bytes > 0:
+            size_color = Style.GREEN if (batch_pct is not None and batch_pct >= 100.0) else Style.WHITE
+            size_str = f" {Style.dim('•')} {size_color}{format_bytes(total_batch_bytes)}{Style.RESET}"
+        else:
+            size_str = ""
+
+        batch_color = Style.GREEN if (batch_pct is not None and batch_pct >= 100.0) else Style.MAGENTA
+        tag_batch = Style.tag("🖼️", "BATCH", batch_color)
+        pct_color = Style.GREEN if (batch_pct is not None and batch_pct >= 100.0) else Style.CYAN
+        skip_notice = f" {Style.dim(f'[{self.skipped_count} skipped]')}" if self.skipped_count else ""
+        line1 = f"{tag_batch} {batch_bar} {Style.white(batch_count)}{size_str} {Style.dim('(')}{pct_color}{batch_pct_text}{Style.RESET}{Style.dim(')')}{skip_notice}"
+
+        # --- Line 2: Current File Progress ---
+        if self.current_total and self.current_total > 0:
+            file_pct = (self.current_downloaded / self.current_total) * 100.0
+            file_pct_text = f"{file_pct:5.1f}%"
+            file_bar = Style.progress_bar(file_pct, width=16)
+            file_sizes = f"{format_bytes(self.current_downloaded)} / {format_bytes(self.current_total)}"
+            rem_bytes = max(0, self.current_total - self.current_downloaded)
+            eta_sec = (rem_bytes / self.current_speed) if (self.current_speed and self.current_speed > 0) else None
+        else:
+            file_pct = None
+            file_pct_text = "  --% "
+            file_bar = Style.progress_bar(None, width=16)
+            file_sizes = f"{format_bytes(self.current_downloaded)} / ??"
+            eta_sec = None
+
+        file_color = Style.GREEN if (file_pct is not None and file_pct >= 100.0) else Style.CYAN
+        tag_file = Style.tag("📥", file_pct_text, file_color)
+        speed_str = f"{format_bytes(int(self.current_speed))}/s" if self.current_speed else "--/s"
+        speed_part = f"{Style.dim('@')} {Style.speed(speed_str)}"
+
+        eta_part = ""
+        if eta_sec and eta_sec > 0 and (file_pct is None or file_pct < 100.0):
+            eta_m, eta_s = divmod(int(eta_sec), 60)
+            eta_part = f" {Style.dim('ETA')} {Style.yellow(f'{eta_m:02d}:{eta_s:02d}')}"
+
+        fname = self.current_filename or "..."
+        max_fname_len = max(8, term_width - 66)
+        if len(fname) > max_fname_len:
+            fname = fname[:max_fname_len - 3] + "..."
+        fname_part = f" {Style.dim('[')}{Style.white(fname)}{Style.dim(']')}"
+
+        line2 = f"{tag_file} {file_bar} {Style.white(file_sizes)} {speed_part}{eta_part}{fname_part}"
+
+        if self._is_tty:
+            if self._lines_printed == 0:
+                sys.stdout.write(f"\r\033[K{line1}\n\r\033[K{line2}")
+                self._lines_printed = 2
+            else:
+                sys.stdout.write(f"\033[A\r\033[K{line1}\n\r\033[K{line2}")
+
+            if done:
+                sys.stdout.write("\n")
+                self._lines_printed = 0
+            sys.stdout.flush()
+        else:
+            if done:
+                sys.stdout.write(f"{line1}\n")
+                sys.stdout.flush()
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._orig, name)
+        return lambda *args, **kwargs: None
+
+
+class _MultiDlGalleryJob(job.DownloadJob):
+    """Custom DownloadJob subclass that routes metadata and items to _GalleryDlBatchTracker."""
+
+    def __init__(self, url: str, tracker: _GalleryDlBatchTracker):
+        super().__init__(url)
+        self.tracker = tracker
+        self.out = tracker
+
+    def handle_directory(self, kwdict: Dict[str, Any]):
+        self.tracker.on_directory(kwdict)
+        return super().handle_directory(kwdict)
+
+    def handle_url(self, url: str, kwdict: Dict[str, Any]):
+        self.tracker.on_url(url, kwdict)
+        return super().handle_url(url, kwdict)
 
 
 class GalleryDlBackend(BaseBackend):
@@ -92,6 +255,11 @@ class GalleryDlBackend(BaseBackend):
                 cfg_path = example_path
         if cfg_path.exists():
             gdl_config.load([str(cfg_path.resolve())])
+
+        # Configure fine-grained progress notification for http and ytdl downloaders (100ms interval)
+        gdl_config.set(("downloader", "http"), "progress", 0.1)
+        gdl_config.set(("downloader", "ytdl"), "progress", 0.1)
+        gdl_config.set(("output",), "shorten", False)
 
         # Enforce MULTI_DOWNLOADER output directory override
         if out_dir:
@@ -130,22 +298,25 @@ class GalleryDlBackend(BaseBackend):
     ) -> ArchiveEntry:
         """Download images/galleries using gallery-dl."""
         out_dir = Path(task.output_dir)
-        tracker: Optional[_GalleryDlOutputTracker] = None
+        tracker: Optional[_GalleryDlBatchTracker] = None
 
         def _run_download() -> int:
             nonlocal tracker
             self._configure_job(out_dir=out_dir)
 
-            dl_job = job.DownloadJob(task.url)
-            tracker = _GalleryDlOutputTracker(dl_job.out, progress_callback=progress_callback)
-            dl_job.out = tracker
+            tracker = _GalleryDlBatchTracker(progress_callback=progress_callback)
+            dl_job = _MultiDlGalleryJob(task.url, tracker=tracker)
             return dl_job.run()
 
         try:
             status_code = await asyncio.to_thread(_run_download)
+            if tracker:
+                tracker.finish()
             if status_code != 0:
                 raise DownloadFailedError(f"gallery-dl returned status code: {status_code}")
         except Exception as e:
+            if tracker:
+                tracker.finish()
             raise DownloadFailedError(f"gallery-dl download failed: {e}")
 
         downloaded_files = tracker.downloaded_files if tracker else []

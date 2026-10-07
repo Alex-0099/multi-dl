@@ -132,7 +132,8 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
 
     try:
         print(f"{Style.tag('🚀', 'DOWNLOADING', Style.BLUE)} Starting transfer...")
-        entry = await backend.download(task, progress_callback=print_progress)
+        progress_cb = None if backend.name == "gallery-dl" else print_progress
+        entry = await backend.download(task, progress_callback=progress_cb)
         print(f"\n{Style.tag('✅', 'COMPLETED', Style.GREEN)} {Style.success('Download finished successfully!')}")
 
         # Format clean path starting with ~downloads\

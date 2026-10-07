@@ -12,8 +12,22 @@ if sys.platform == "win32":
     os.system("")
 
 
+def format_bytes(size: Optional[float]) -> str:
+    """Formats bytes into human-readable string (B, KB, MB, GB)."""
+    if size is None:
+        return "??"
+    s = float(size)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if s < 1024.0:
+            return f"{s:.2f} {unit}"
+        s /= 1024.0
+    return f"{s:.2f} PB"
+
+
 class Style:
     """ANSI color and styling helper for CLI rendering."""
+
+    format_bytes = staticmethod(format_bytes)
 
     RESET = "\033[0m"
     BOLD = "\033[1m"

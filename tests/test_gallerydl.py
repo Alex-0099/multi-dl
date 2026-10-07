@@ -32,3 +32,48 @@ def test_gallerydl_modular_config_loading(tmp_path):
     
     # Verify archive was disabled for test isolation
     assert gdl_config.get(("extractor",), "archive") is None
+
+
+def test_gallerydl_batch_tracker(tmp_path):
+    from backends.gallerydl_backend import _GalleryDlBatchTracker
+
+    tracker = _GalleryDlBatchTracker()
+    assert tracker.total_files is None
+    assert tracker.completed_count == 0
+
+    # 1. On directory metadata
+    tracker.on_directory({"count": 50, "title": "Sample Gallery"})
+    assert tracker.total_files == 50
+    assert tracker.title_announced is True
+
+    # 2. On URL queued
+    tracker.on_url("https://example.com/001.jpg", {"num": 1, "filename": "001.jpg"})
+    assert tracker.current_filename == "001.jpg"
+
+    # 3. On start & progress
+    dummy_file = tmp_path / "001.jpg"
+    dummy_file.write_bytes(b"hello world")
+
+    tracker.start(str(dummy_file))
+    assert tracker.current_filename == "001.jpg"
+
+    tracker.progress(1000, 500, 250000)
+    assert tracker.current_total == 1000
+    assert tracker.current_downloaded == 500
+    assert tracker.current_speed == 250000.0
+
+    # 4. On success
+    tracker.success(str(dummy_file))
+    assert tracker.completed_count == 1
+    assert len(tracker.downloaded_files) == 1
+    assert sum(tracker._file_bytes.values()) == 11  # len(b"hello world")
+
+    # 5. On skip
+    tracker.skip(str(dummy_file))
+    assert tracker.completed_count == 2
+    assert tracker.skipped_count == 1
+
+    # 6. Finish
+    tracker.finish()
+
+
