@@ -86,3 +86,24 @@ def test_progress_bar_stages():
     bar_none = Style.progress_bar(None, width=20)
     assert "░" * 20 in bar_none
 
+
+def test_interactive_banner(capsys):
+    import importlib
+    from core.config import ConfigManager
+    from core.archive import ArchiveManager
+
+    cfg = ConfigManager()
+    archive = ArchiveManager(cfg.archive_db_path)
+    multi_dl = importlib.import_module("multi-dl")
+
+    multi_dl.print_banner(cfg, archive)
+    captured = capsys.readouterr().out
+
+    assert "MULTI_DOWNLOADER v1.0" in captured
+    assert "Configuration" in captured
+    assert "Interactive Mode" in captured
+    assert "Enter URL:" not in captured  # prompt is printed in input() loop
+    assert "[yt-dlp]" in captured
+    assert "[terabox-dl]" in captured
+
+

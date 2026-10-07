@@ -6,6 +6,8 @@ import argparse
 import asyncio
 import io
 import os
+import re
+import shutil
 import signal
 import sys
 from pathlib import Path
@@ -162,8 +164,123 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
         print(f"\n{Style.tag('❌', 'ERROR', Style.RED)} {Style.error(f'Unexpected failure: {e}')}")
 
 
+def print_banner(config: ConfigManager, archive: ArchiveManager) -> None:
+    term_width = shutil.get_terminal_size((80, 24)).columns
+    box_width = min(66, max(52, term_width - 4))
+
+    def _box_line(text: str) -> str:
+        clean = re.sub(r'\033\[[0-9;]*[a-zA-Z]', '', text)
+        pad_total = max(0, box_width - 2 - len(clean))
+        left = pad_total // 2
+        right = pad_total - left
+        return f"{Style.CYAN}║{' ' * left}{text}{' ' * right}║{Style.RESET}"
+
+    bar = "═" * (box_width - 2)
+    top_border = f"{Style.CYAN}╔{bar}╗{Style.RESET}"
+    bot_border = f"{Style.CYAN}╚{bar}╝{Style.RESET}"
+
+    print(f"\n{top_border}")
+    print(_box_line(f"{Style.BOLD}{Style.WHITE}MULTI_DOWNLOADER v1.0{Style.RESET}"))
+    print(_box_line(f"{Style.WHITE}Universal Modular Media & File Downloader{Style.RESET}"))
+    print(_box_line(f"{Style.DIM}yt-dlp • gallery-dl • Terabox-dl • Telegram-dl{Style.RESET}"))
+    print(f"{bot_border}\n")
+
+    # Configuration section
+    header_cfg = "─── Configuration "
+    sep_len = max(6, box_width - len(header_cfg))
+    print(f"{Style.CYAN}{header_cfg}{'─' * sep_len}{Style.RESET}")
+
+    raw_dl = config.download_dir
+    try:
+        clean_dl = f"~{raw_dl.relative_to(config.download_dir.parent)}"
+    except ValueError:
+        clean_dl = str(raw_dl)
+
+    print(f"  {Style.dim('Downloads:')} {Style.white(clean_dl)}")
+
+    archive_enabled = config.get("archive", "enabled", True)
+    if archive_enabled:
+        stats = archive.get_stats()
+        tot_cnt = stats.get("total_count", 0)
+        print(f"  {Style.dim('Archive:')}   {Style.white(str(config.archive_db_path))} {Style.dim(f'({tot_cnt} recorded)')}")
+    else:
+        print(f"  {Style.dim('Archive:')}   {Style.yellow('Disabled')}")
+
+    badges = " ".join([
+        Style.engine_badge("yt-dlp"),
+        Style.engine_badge("gallery-dl"),
+        Style.engine_badge("terabox-dl"),
+        Style.engine_badge("telegram-dl"),
+    ])
+    print(f"  {Style.dim('Engines:')}   {badges}\n")
+
+    # Interactive mode prompt section
+    header_mode = "─── Interactive Mode "
+    mode_sep_len = max(6, box_width - len(header_mode))
+    print(f"{Style.CYAN}{header_mode}{'─' * mode_sep_len}{Style.RESET}")
+    print(f"  {Style.dim('Enter a URL or path to a text file with links to begin.')}")
+    print(f"  {Style.dim('Right-click to paste. Press ')}{Style.bold('Ctrl+C')}{Style.dim(' or type ')}{Style.bold('exit')}{Style.dim(' to quit.')}\n")
+
+
+async def interactive_mode():
+    config = ConfigManager()
+    archive = ArchiveManager(config.archive_db_path)
+    print_banner(config, archive)
+
+    while True:
+        try:
+            url_input = input(f"{Style.bold(Style.cyan('Enter URL: '))}{Style.RESET}").strip()
+        except (KeyboardInterrupt, EOFError):
+            print(f"\n{Style.dim('Goodbye!')}")
+            break
+
+        if not url_input or url_input.lower() in ("exit", "quit", "q"):
+            print(f"{Style.dim('Goodbye!')}")
+            break
+
+        # Check if input is a text file containing URLs
+        txt_path = Path(url_input.strip('"\''))
+        if txt_path.exists() and txt_path.is_file():
+            print(f"\n{Style.tag('📄', 'BATCH FILE', Style.CYAN)} Reading links from {Style.white(txt_path.name)}...")
+            try:
+                lines = [
+                    line.strip()
+                    for line in txt_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip() and not line.strip().startswith("#")
+                ]
+                print(f"{Style.tag('📦', 'BATCH', Style.MAGENTA)} Found {Style.cyan(str(len(lines)))} links in file\n")
+                for i, link in enumerate(lines, 1):
+                    print(f"\n{Style.dim(f'[{i}/{len(lines)}]')} {Style.bold(link)}")
+                    await download_url(link)
+            except Exception as e:
+                print(f"{Style.tag('❌', 'ERROR', Style.RED)} Failed to process batch file: {e}")
+        else:
+            # Check for multiple URLs pasted together
+            raw_tokens = url_input.split()
+            urls = [
+                t for t in raw_tokens
+                if t.startswith("http://") or t.startswith("https://") or "surl=" in t or "t.me/" in t
+            ]
+            if len(urls) > 1:
+                print(f"\n{Style.tag('📦', 'BATCH', Style.MAGENTA)} Detected {Style.cyan(str(len(urls)))} links pasted\n")
+                for i, u in enumerate(urls, 1):
+                    print(f"\n{Style.dim(f'[{i}/{len(urls)}]')} {Style.bold(u)}")
+                    await download_url(u)
+            else:
+                await download_url(url_input)
+
+        term_width = shutil.get_terminal_size((80, 24)).columns
+        sep_width = min(66, max(40, term_width - 4))
+        print(f"\n{Style.CYAN}{'─' * sep_width}{Style.RESET}\n")
+
+
 def main():
     raw_args = sys.argv[1:]
+
+    # Interactive mode: running without arguments or with -i / --interactive / interactive
+    if not raw_args or raw_args[0] in ("-i", "--interactive", "interactive"):
+        asyncio.run(interactive_mode())
+        return
 
     # Fast-path for Update command / flag: multi-dl -U / multi-dl --update / multi-dl update [engine]
     if any(arg in ("-U", "--update") for arg in raw_args) or (raw_args and raw_args[0] == "update"):
@@ -230,7 +347,11 @@ def main():
         epilog="Tip: You can download directly with: python multi-dl.py <URL>"
     )
     parser.add_argument("-U", "--update", action="store_true", help="Update all download engines to their latest versions")
+    parser.add_argument("-i", "--interactive", action="store_true", help="Launch interactive link pasting session")
     subparsers = parser.add_subparsers(dest="command")
+
+    # 'interactive' command
+    subparsers.add_parser("interactive", help="Start interactive link pasting session")
 
     # Optional 'download' subcommand (for backward compatibility)
     dl_parser = subparsers.add_parser("download", help="Download a URL (optional, you can just pass the URL directly)")
@@ -256,7 +377,9 @@ def main():
 
     args = parser.parse_args()
 
-    if getattr(args, "update", False) or args.command == "update":
+    if getattr(args, "interactive", False) or args.command == "interactive":
+        asyncio.run(interactive_mode())
+    elif getattr(args, "update", False) or args.command == "update":
         target = getattr(args, "engine", "all")
         updater = EngineUpdater()
         if target == "all":
