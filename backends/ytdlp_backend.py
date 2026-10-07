@@ -1,0 +1,423 @@
+"""
+Adapter backend wrapping yt-dlp via its official Python API.
+Ensures total config isolation by passing ignoreconfig=True.
+"""
+
+import asyncio
+from pathlib import Path
+import shutil
+import sys
+from typing import Any, Callable, Dict, Optional
+import uuid
+
+import yt_dlp
+
+from backends.base import BaseBackend
+from core.exceptions import DownloadFailedError
+from core.models import ArchiveEntry, DownloadProgress, DownloadTask, MediaType
+from core.pot_manager import POTManager
+
+
+class YtDlpStatusLogger:
+    """Formats yt-dlp extraction and challenge events into concise terminal status messages."""
+
+    def __init__(self):
+        self._last_msg = ""
+        self.last_error = ""
+
+    def _safe_print(self, text: str):
+        if text != self._last_msg:
+            self._last_msg = text
+            try:
+                sys.stdout.write(f"\r\033[K{text}\n")
+                sys.stdout.flush()
+            except UnicodeEncodeError:
+                ascii_text = text.encode("ascii", "replace").decode("ascii")
+                print(ascii_text)
+            except Exception:
+                print(text)
+
+    def _handle_log(self, msg: str):
+        if "[pot:bgutil:http]" in msg:
+            self._safe_print("⚙️  [PO-TOKEN] Generating Proof-of-Origin token via sidecar...")
+        elif "[jsc:" in msg or "Solving JS challenges" in msg:
+            self._safe_print("⚡ [CHALLENGE] Solving JavaScript challenge...")
+        elif "Downloading webpage" in msg:
+            self._safe_print("🌐 [METADATA] Fetching media webpage...")
+        elif "Downloading player" in msg:
+            self._safe_print("📜 [PLAYER] Loading YouTube player scripts...")
+        elif "Downloading initial data" in msg or "Downloading visionos" in msg or "Downloading web" in msg:
+            self._safe_print("🔍 [EXTRACTOR] Querying YouTube player APIs...")
+        elif "Downloading m3u8" in msg or "Downloading MPD" in msg:
+            self._safe_print("📡 [STREAMS] Resolving adaptive DASH/HLS stream manifests...")
+        elif "[download] Destination:" in msg:
+            filename = msg.split("Destination:")[-1].strip()
+            self._safe_print(f"🎯 [TARGET] Preparing output stream: {Path(filename).name}")
+
+    def debug(self, msg: str):
+        self._handle_log(msg)
+
+    def info(self, msg: str):
+        self._handle_log(msg)
+
+    def warning(self, msg: str):
+        # Filter noisy yt-dlp internal fallbacks
+        if "Incomplete data" not in msg and "unable to extract yt initial data" not in msg:
+            self._safe_print(f"⚠️  [WARNING] {msg}")
+
+    def error(self, msg: str):
+        self.last_error = msg
+        self._safe_print(f"❌ [YT-DLP ERROR] {msg}")
+
+
+class YtDlpBackend(BaseBackend):
+    """Integrates yt-dlp cleanly via Python API with isolated configuration."""
+
+    name: str = "yt-dlp"
+
+    def _is_youtube(self, url: str) -> bool:
+        """Determines if the given URL targets YouTube."""
+        u = url.lower()
+        return "youtube.com" in u or "youtu.be" in u
+
+    def _ensure_po_provider_if_needed(self, url: str) -> None:
+        """Auto-starts local PO Token provider sidecar if downloading from YouTube."""
+        if self._is_youtube(url) and self.config.get("auto_start_po_provider", True):
+            host = self.config.get("po_provider_host", "127.0.0.1")
+            port = self.config.get("po_provider_port", 4416)
+            POTManager.ensure_server_running(host=host, port=port)
+
+    def _resolve_ffmpeg(self) -> Optional[str]:
+        """Locates ffmpeg from config or checks standard paths."""
+        configured_path = self.config.get("ffmpeg_location")
+        if configured_path and Path(configured_path).exists():
+            return configured_path
+        
+        # Check standard PATH
+        system_ffmpeg = shutil.which("ffmpeg")
+        if system_ffmpeg:
+            return system_ffmpeg
+            
+        # Check common local path in user directory
+        local_candidate = Path.home() / "yt-dlp" / "ffmpeg.exe"
+        if local_candidate.exists():
+            return str(local_candidate)
+
+        return None
+
+    def can_handle(self, url: str) -> bool:
+        """Check if yt-dlp has an extractor capable of handling this URL."""
+        # Yield Telegram URLs exclusively to telegram-dl backend
+        url_lower = url.lower()
+        if "t.me/" in url_lower or "telegram.me/" in url_lower:
+            return False
+
+        classes = yt_dlp.extractor.gen_extractor_classes()
+        for ie_class in classes:
+            if ie_class.suitable(url) and ie_class.IE_NAME not in ("generic", "telegram:embed"):
+                return True
+        return False
+
+    @staticmethod
+    def _is_auth_error(err_str: str) -> bool:
+        """Checks if a yt-dlp error indicates that authentication/cookies are required."""
+        lowered = err_str.lower()
+        triggers = (
+            "sign in",
+            "please sign in",
+            "confirm your age",
+            "age-restricted",
+            "login_required",
+            "cookies-from-browser",
+            "cookies for the authentication",
+            "private video",
+            "members-only",
+            "http error 429",
+            "too many requests",
+            "http error 403",
+            "forbidden",
+            "unable to download video subtitles",
+            "bot detection",
+            "confirm you're not a bot",
+        )
+        return any(t in lowered for t in triggers)
+
+    def _load_config_file_opts(self) -> Dict[str, Any]:
+        """Loads options from the project's modular yt-dlp config file (e.g. configs/yt-dlp.conf)."""
+        cfg_path_str = self.config.get("config_file", "configs/yt-dlp.conf")
+        cfg_path = Path(cfg_path_str)
+        if not cfg_path.exists():
+            return {}
+        try:
+            _, _, _, file_opts = yt_dlp.parse_options(["--config-locations", str(cfg_path.resolve())])
+            # Remove output template and error swallowing flags so MULTI_DOWNLOADER controls orchestration
+            file_opts.pop("outtmpl", None)
+            file_opts.pop("ignoreerrors", None)
+            return file_opts
+        except Exception:
+            return {}
+
+    async def extract_info(self, url: str) -> Dict[str, Any]:
+        """Extract metadata asynchronously without downloading the media."""
+        self._ensure_po_provider_if_needed(url)
+        # Built-in defaults: bypass GVS PO token skips for age-restricted / DASH formats
+        extractor_args = {
+            "youtube": {
+                "formats": ["missing_pot"]
+            }
+        }
+        cfg_extractor_args = self.config.get("extractor_args")
+        if isinstance(cfg_extractor_args, dict):
+            for k, v in cfg_extractor_args.items():
+                if k not in extractor_args:
+                    extractor_args[k] = v
+                elif isinstance(extractor_args[k], dict) and isinstance(v, dict):
+                    extractor_args[k].update(v)
+
+        opts = self._load_config_file_opts()
+        opts.update({
+            "logger": YtDlpStatusLogger(),
+            "ignoreconfig": True,  # Prevent reading system %APPDATA%/yt-dlp/config
+            "skip_download": True,
+            "remote_components": ["ejs:github"],
+            "extractor_args": extractor_args,
+        })
+
+        ffmpeg_bin = self._resolve_ffmpeg()
+        if ffmpeg_bin:
+            opts["ffmpeg_location"] = ffmpeg_bin
+
+        cookies_browser = self.config.get("cookies_from_browser")
+        if cookies_browser:
+            opts["cookiesfrombrowser"] = (cookies_browser,)
+
+        def _extract():
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        try:
+            return await asyncio.to_thread(_extract)
+        except Exception as e:
+            err_str = str(e)
+            fallback_browser = self.config.get("fallback_browser_cookies")
+            if not cookies_browser and fallback_browser and self._is_auth_error(err_str):
+                opts["cookiesfrombrowser"] = (fallback_browser,)
+                try:
+                    return await asyncio.to_thread(_extract)
+                except Exception as retry_err:
+                    raise DownloadFailedError(f"yt-dlp metadata extraction failed with fallback cookies: {retry_err}")
+            raise DownloadFailedError(f"yt-dlp metadata extraction failed: {e}")
+
+    async def download(
+        self,
+        task: DownloadTask,
+        progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+    ) -> ArchiveEntry:
+        """Downloads media using yt-dlp with real-time progress callbacks."""
+        self._ensure_po_provider_if_needed(task.url)
+        out_dir = Path(task.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        downloaded_filepath = None
+        announced_media = False
+
+        def _yt_progress_hook(d: Dict[str, Any]):
+            nonlocal downloaded_filepath, announced_media
+            if d.get("status") == "downloading":
+                if not announced_media:
+                    announced_media = True
+                    info_dict = d.get("info_dict", {})
+                    title = info_dict.get("title")
+                    res = info_dict.get("resolution") or (f"{info_dict.get('height')}p" if info_dict.get("height") else "")
+                    fmt_id = info_dict.get("format_id")
+                    if title:
+                        print(f"🎬 [MEDIA] {title}")
+                    if res or fmt_id:
+                        print(f"🎞️  [FORMAT] Stream: {fmt_id} ({res})")
+
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                downloaded = d.get("downloaded_bytes") or 0
+                speed = d.get("speed")
+                eta = d.get("eta")
+
+                prog = DownloadProgress(
+                    downloaded_bytes=downloaded,
+                    total_bytes=total,
+                    speed_bytes_sec=speed,
+                    eta_seconds=eta,
+                    current_file=d.get("filename"),
+                )
+                prog.update_percent()
+                if progress_callback:
+                    progress_callback(prog)
+
+            elif d.get("status") == "finished":
+                downloaded_filepath = d.get("filename")
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+
+        # Built-in defaults: bypass GVS PO token skips for age-restricted / DASH formats
+        extractor_args = {
+            "youtube": {
+                "formats": ["missing_pot"]
+            }
+        }
+        cfg_extractor_args = self.config.get("extractor_args")
+        if isinstance(cfg_extractor_args, dict):
+            for k, v in cfg_extractor_args.items():
+                if k not in extractor_args:
+                    extractor_args[k] = v
+                elif isinstance(extractor_args[k], dict) and isinstance(v, dict):
+                    extractor_args[k].update(v)
+
+        task_extractor_args = task.options.get("extractor_args")
+        if isinstance(task_extractor_args, dict):
+            for k, v in task_extractor_args.items():
+                if k not in extractor_args:
+                    extractor_args[k] = v
+                elif isinstance(extractor_args[k], dict) and isinstance(v, dict):
+                    extractor_args[k].update(v)
+
+        status_logger = YtDlpStatusLogger()
+        ydl_opts = self._load_config_file_opts()
+        ydl_opts.update({
+            "ignoreconfig": True,  # Complete isolation from standalone yt-dlp configs
+            "ignoreerrors": False, # Ensure exceptions are raised so smart fallbacks trigger
+            "logger": status_logger,
+            "noprogress": True,   # Suppress internal yt-dlp stdout progress bar
+            "format": task.options.get("format", self.config.get("format", ydl_opts.get("format", "bestvideo*+bestaudio/best"))),
+            "merge_output_format": task.options.get("merge_output_format", self.config.get("merge_output_format", ydl_opts.get("merge_output_format", "mp4"))),
+            "outtmpl": str(out_dir / "%(title)s [%(id)s].%(ext)s"),
+            "progress_hooks": [_yt_progress_hook],
+            "remote_components": ["ejs:github"],  # Automatic JS challenge solver for age-restricted / n-sig
+            "extractor_args": extractor_args,
+        })
+
+        # Post-processor hook to capture final merged file (e.g. .mp4 instead of temp .webm/.m4a)
+        final_filepath = None
+        def _yt_postprocessor_hook(d: Dict[str, Any]):
+            nonlocal final_filepath
+            if d.get("status") == "finished":
+                # Check for merged output
+                merged = d.get("info_dict", {}).get("_filename")
+                if merged and Path(merged).exists():
+                    final_filepath = merged
+
+        ydl_opts["postprocessor_hooks"] = [_yt_postprocessor_hook]
+
+        # Resolve and bind ffmpeg
+        ffmpeg_bin = self._resolve_ffmpeg()
+        if ffmpeg_bin:
+            ydl_opts["ffmpeg_location"] = ffmpeg_bin
+
+        # Optional Cookies (Browser or cookie file)
+        cookies_browser = task.options.get("cookies_from_browser", self.config.get("cookies_from_browser"))
+        if cookies_browser:
+            ydl_opts["cookiesfrombrowser"] = (cookies_browser,)
+
+        cookie_file = task.options.get("cookies", self.config.get("cookies_file"))
+        if cookie_file and Path(cookie_file).exists():
+            ydl_opts["cookiefile"] = str(Path(cookie_file).resolve())
+
+        # Optional Rate Limit
+        rate_limit = task.options.get("rate_limit_bytes", self.config.get("rate_limit_bytes"))
+        if rate_limit:
+            ydl_opts["ratelimit"] = rate_limit
+
+        # Add optional post-processing settings from config
+        if self.config.get("embed_metadata", True):
+            ydl_opts.setdefault("postprocessors", []).append({"key": "FFmpegMetadata"})
+        if self.config.get("embed_thumbnail", False):
+            ydl_opts["writethumbnail"] = True
+            ydl_opts.setdefault("postprocessors", []).append({"key": "EmbedThumbnail"})
+        if self.config.get("write_subtitles", False):
+            ydl_opts["writesubtitles"] = True
+            ydl_opts.setdefault("postprocessors", []).append({"key": "FFmpegEmbedSubtitle"})
+
+        def _run_download():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(task.url, download=True)
+                if not info and status_logger.last_error:
+                    raise DownloadFailedError(status_logger.last_error)
+                return info
+
+        try:
+            info = await asyncio.to_thread(_run_download)
+        except Exception as e:
+            err_str = str(e) or status_logger.last_error
+            fallback_browser = self.config.get("fallback_browser_cookies")
+            user_provided_cookies = task.options.get("cookies_from_browser") or task.options.get("cookies")
+            if not user_provided_cookies and fallback_browser and self._is_auth_error(err_str):
+                print(f"\n⚠️  [AUTH-REQUIRED] YouTube rate-limited or requires sign-in. Automatically retrying with {fallback_browser} cookies...")
+                ydl_opts["cookiesfrombrowser"] = (fallback_browser,)
+                try:
+                    info = await asyncio.to_thread(_run_download)
+                except Exception as retry_err:
+                    retry_err_str = str(retry_err)
+                    if "subtitles" in retry_err_str.lower():
+                        print(f"\n⚠️  [SUBTITLES] Subtitle download failed ({retry_err}). Retrying without subtitles...")
+                        ydl_opts["writesubtitles"] = False
+                        ydl_opts["writeautomaticsub"] = False
+                        try:
+                            info = await asyncio.to_thread(_run_download)
+                        except Exception as sub_err:
+                            raise DownloadFailedError(f"yt-dlp download failed: {sub_err}")
+                    else:
+                        raise DownloadFailedError(f"yt-dlp download failed with fallback {fallback_browser} cookies: {retry_err}")
+            elif "subtitles" in err_str.lower():
+                print(f"\n⚠️  [SUBTITLES] Subtitle download rate-limited ({e}). Retrying without subtitles...")
+                ydl_opts["writesubtitles"] = False
+                ydl_opts["writeautomaticsub"] = False
+                try:
+                    info = await asyncio.to_thread(_run_download)
+                except Exception as sub_err:
+                    raise DownloadFailedError(f"yt-dlp download failed: {sub_err}")
+            else:
+                raise DownloadFailedError(f"yt-dlp download failed: {e}")
+
+        # Resolve downloaded file location: check postprocessor first, then finished hook
+        actual_path = final_filepath or downloaded_filepath
+        if not actual_path and info:
+            actual_path = info.get("_filename")
+        if not actual_path and info and "requested_downloads" in info:
+            actual_path = info["requested_downloads"][0].get("filepath")
+
+        path_obj = Path(actual_path) if actual_path else None
+
+        # If path points to an intermediate fragment/stream, check if the merged .mp4 exists
+        if path_obj and (not path_obj.exists() or ".f" in path_obj.name):
+            target_ext = ydl_opts.get("merge_output_format", "mp4")
+            # Try to match expected final name
+            clean_name = path_obj.stem.split(".f")[0] + f".{target_ext}"
+            candidate = out_dir / clean_name
+            if candidate.exists():
+                path_obj = candidate
+
+        if not path_obj or not path_obj.exists() or not path_obj.is_file():
+            err_msg = status_logger.last_error or "yt-dlp completed without producing a valid media file."
+            raise DownloadFailedError(err_msg)
+
+        file_size = path_obj.stat().st_size if path_obj.is_file() else None
+
+        # Clean title fallback
+        title = info.get("title", path_obj.stem) if info else path_obj.stem
+        uploader = info.get("uploader", "Unknown") if info else "Unknown"
+
+        return ArchiveEntry(
+            id=str(uuid.uuid4()),
+            url=task.url,
+            file_path=str(path_obj.resolve()),
+            file_name=path_obj.name,
+            file_hash=None,  # Hashed afterwards by ArchiveManager
+            file_size=file_size,
+            backend=self.name,
+            source_site=info.get("extractor_key") or info.get("extractor") if info else "unknown",
+            media_type=MediaType.VIDEO if (info and info.get("vcodec") != "none") else MediaType.AUDIO,
+            metadata={
+                "title": title,
+                "uploader": uploader,
+                "duration": info.get("duration") if info else None,
+                "id": info.get("id") if info else None,
+                "resolution": info.get("resolution") if info else None,
+            },
+        )

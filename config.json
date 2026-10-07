@@ -1,0 +1,57 @@
+{
+    "version": "1.0.0",
+    "general": {
+        "download_dir": "downloads",
+        "concurrent_downloads": 3,
+        "organize_by_backend": true,
+        "organize_by_site": true,
+        "auto_detect_backend": true,
+        "retry_failed_attempts": 3
+    },
+    "archive": {
+        "enabled": false,
+        "db_path": "data/archive.db",
+        "dedup_by_url": false,
+        "dedup_by_hash": false
+    },
+    "yt_dlp": {
+        "format": "bestvideo*+bestaudio/best",
+        "merge_output_format": "mp4",
+        "embed_metadata": true,
+        "embed_thumbnail": false,
+        "write_subtitles": false,
+        "rate_limit_bytes": null,
+        "ffmpeg_location": null,
+        "cookies_from_browser": null,
+        "fallback_browser_cookies": "firefox",
+        "auto_start_po_provider": true,
+        "po_provider_host": "127.0.0.1",
+        "po_provider_port": 4416,
+        "extractor_args": {
+            "youtube": {
+                "formats": ["missing_pot"]
+            }
+        },
+        "sponsorblock": false,
+        "write_thumbnail": false,
+        "config_file": "configs/yt-dlp.conf"
+    },
+    "gallery_dl": {
+        "config_file": "configs/gallery-dl.json"
+    },
+    "cyberdrop_dl": {
+        "max_simultaneous": 5,
+        "use_domain_subfolders": true,
+        "executable_path": "cyberdrop-dl"
+    },
+    "telegram_dl": {
+        "api_id": "",
+        "api_hash": "",
+        "session_name": "telegram_dl_session",
+        "media_types": ["photo", "video", "document"],
+        "min_file_size_mb": 0,
+        "max_file_size_mb": 0,
+        "organize_by_chat": true,
+        "organize_by_type": true
+    }
+}

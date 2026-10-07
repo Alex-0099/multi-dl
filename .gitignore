@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Sensitive sessions, credentials & private configs
+*.session
+*.session-journal
+.env
+configs/gallery-dl.json
+cookies/
+*cookies*.txt
+
+# Runtime data & downloads
+downloads/
+data/archive.db
+data/queue.json
+*.log
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+node_modules/
+tools/
+.pytest_cache/
+
