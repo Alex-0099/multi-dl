@@ -78,7 +78,6 @@
             ],
             "api-key": "",
             "directory": [
-                "civitai",
                 "{model_name}",
                 "{user['username']}"
             ],
@@ -94,7 +93,6 @@
         "comick": {
             "browser": "chrome",
             "directory": [
-                "comick",
                 "{manga}",
                 "{chapter:>03} - {title}"
             ],
@@ -341,7 +339,6 @@
             "refresh-token": "",
             "include": "artworks",
             "directory": [
-                "Pixiv",
                 "{user[id]} - {user[name]}"
             ],
             "embeds": false,
@@ -477,10 +474,10 @@
             "cookies": [
                 "firefox"
             ],
-            "format": "bv+ba/best",
+            "format": "bestvideo*+bestaudio/best",
             "merge_output_format": "mp4",
             "generic": "force",
-            "module": null,
+            "module": "yt_dlp",
             "forward-cookies": false,
             "mtime": true,
             "outtmpl": null,
@@ -522,10 +519,10 @@
             "validate": true
         },
         "ytdl": {
-            "format": "bv+ba/best",
+            "format": "bestvideo*+bestaudio/best",
             "forward-cookies": false,
             "logging": true,
-            "module": null,
+            "module": "yt_dlp",
             "outtmpl": null,
             "raw-options": null
         }
@@ -550,7 +547,7 @@
         "unsupportedfile": null
     },
     "cache": {
-        "file": "~/gallery-dl/cache.sqlite3"
+        "file": "data/cache.sqlite3"
     },
     "netrc": true
 }

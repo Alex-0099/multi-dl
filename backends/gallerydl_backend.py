@@ -17,6 +17,7 @@ from gallery_dl import job
 from backends.base import BaseBackend
 from core.exceptions import DownloadFailedError
 from core.models import ArchiveEntry, DownloadProgress, DownloadTask, MediaType
+from core.terminal import Style
 
 
 class _GalleryDlOutputTracker:
@@ -30,7 +31,7 @@ class _GalleryDlOutputTracker:
     def success(self, path: str) -> None:
         self.downloaded_files.append(path)
         p = Path(path)
-        sys.stdout.write(f"\r\033[K📷 [SAVED] {p.name}\n")
+        sys.stdout.write(f"\r\033[K{Style.tag('📷', 'SAVED', Style.GREEN)} {Style.white(p.name)}\n")
         sys.stdout.flush()
 
         if self.progress_callback:
@@ -49,7 +50,7 @@ class _GalleryDlOutputTracker:
 
     def skip(self, path: str) -> None:
         p = Path(path)
-        sys.stdout.write(f"\r\033[K⏭️  [SKIPPED] {p.name} (already exists / archived)\n")
+        sys.stdout.write(f"\r\033[K{Style.tag('⏭️', 'SKIPPED', Style.GRAY)} {Style.muted(p.name)} {Style.dim('(already exists / archived)')}\n")
         sys.stdout.flush()
         if self._orig and hasattr(self._orig, "skip"):
             try:
@@ -58,7 +59,7 @@ class _GalleryDlOutputTracker:
                 pass
 
     def error(self, msg: str) -> None:
-        sys.stdout.write(f"\r\033[K❌ [GALLERY-DL ERROR] {msg}\n")
+        sys.stdout.write(f"\r\033[K{Style.tag('❌', 'GALLERY-DL ERROR', Style.RED)} {Style.red(msg)}\n")
         sys.stdout.flush()
         if self._orig and hasattr(self._orig, "error"):
             try:
@@ -82,6 +83,9 @@ class GalleryDlBackend(BaseBackend):
         # Load engine-specific config file (e.g. configs/gallery-dl.json)
         config_file = self.config.get("config_file", "configs/gallery-dl.json")
         cfg_path = Path(config_file)
+        if not cfg_path.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent
+            cfg_path = project_root / cfg_path
         if not cfg_path.exists():
             example_path = cfg_path.with_name("gallery-dl.example.json")
             if example_path.exists():
@@ -150,8 +154,13 @@ class GalleryDlBackend(BaseBackend):
         if downloaded_files:
             primary_path = Path(downloaded_files[0])
             total_size = sum(Path(f).stat().st_size for f in downloaded_files if Path(f).exists())
-            file_name = primary_path.name if len(downloaded_files) == 1 else out_dir.name
-            file_path = str(primary_path.resolve()) if len(downloaded_files) == 1 else str(out_dir.resolve())
+            if len(downloaded_files) == 1:
+                file_name = primary_path.name
+                file_path = str(primary_path.resolve())
+            else:
+                album_dir = primary_path.parent
+                file_name = album_dir.name
+                file_path = str(album_dir.resolve())
         else:
             # Fallback if extractor downloaded directly or files were already present
             primary_path = out_dir

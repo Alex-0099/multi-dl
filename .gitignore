@@ -29,4 +29,5 @@ dist/
 node_modules/
 tools/
 .pytest_cache/
+*.png
 

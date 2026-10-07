@@ -16,6 +16,7 @@ from backends.base import BaseBackend
 from core.exceptions import DownloadFailedError
 from core.models import ArchiveEntry, DownloadProgress, DownloadTask, MediaType
 from core.pot_manager import POTManager
+from core.terminal import Style
 
 
 class YtDlpStatusLogger:
@@ -39,20 +40,20 @@ class YtDlpStatusLogger:
 
     def _handle_log(self, msg: str):
         if "[pot:bgutil:http]" in msg:
-            self._safe_print("⚙️  [PO-TOKEN] Generating Proof-of-Origin token via sidecar...")
+            self._safe_print(f"{Style.tag('⚙️', 'PO-TOKEN', Style.MAGENTA)} Generating Proof-of-Origin token via sidecar...")
         elif "[jsc:" in msg or "Solving JS challenges" in msg:
-            self._safe_print("⚡ [CHALLENGE] Solving JavaScript challenge...")
+            self._safe_print(f"{Style.tag('⚡', 'CHALLENGE', Style.YELLOW)} Solving JavaScript challenge...")
         elif "Downloading webpage" in msg:
-            self._safe_print("🌐 [METADATA] Fetching media webpage...")
+            self._safe_print(f"{Style.tag('🌐', 'METADATA', Style.CYAN)} Fetching media webpage...")
         elif "Downloading player" in msg:
-            self._safe_print("📜 [PLAYER] Loading YouTube player scripts...")
+            self._safe_print(f"{Style.tag('📜', 'PLAYER', Style.BLUE)} Loading YouTube player scripts...")
         elif "Downloading initial data" in msg or "Downloading visionos" in msg or "Downloading web" in msg:
-            self._safe_print("🔍 [EXTRACTOR] Querying YouTube player APIs...")
+            self._safe_print(f"{Style.tag('🔍', 'EXTRACTOR', Style.CYAN)} Querying YouTube player APIs...")
         elif "Downloading m3u8" in msg or "Downloading MPD" in msg:
-            self._safe_print("📡 [STREAMS] Resolving adaptive DASH/HLS stream manifests...")
+            self._safe_print(f"{Style.tag('📡', 'STREAMS', Style.BLUE)} Resolving adaptive DASH/HLS stream manifests...")
         elif "[download] Destination:" in msg:
             filename = msg.split("Destination:")[-1].strip()
-            self._safe_print(f"🎯 [TARGET] Preparing output stream: {Path(filename).name}")
+            self._safe_print(f"{Style.tag('🎯', 'TARGET', Style.YELLOW)} Preparing output stream: {Style.white(Path(filename).name)}")
 
     def debug(self, msg: str):
         self._handle_log(msg)
@@ -61,13 +62,18 @@ class YtDlpStatusLogger:
         self._handle_log(msg)
 
     def warning(self, msg: str):
-        # Filter noisy yt-dlp internal fallbacks
-        if "Incomplete data" not in msg and "unable to extract yt initial data" not in msg:
-            self._safe_print(f"⚠️  [WARNING] {msg}")
+        # Filter noisy yt-dlp internal fallbacks and benign client impersonation warnings
+        noisy_patterns = (
+            "Incomplete data",
+            "unable to extract yt initial data",
+            "no impersonate target is available",
+        )
+        if not any(p in msg for p in noisy_patterns):
+            self._safe_print(f"{Style.tag('⚠️', 'WARNING', Style.YELLOW)} {Style.yellow(msg)}")
 
     def error(self, msg: str):
         self.last_error = msg
-        self._safe_print(f"❌ [YT-DLP ERROR] {msg}")
+        self._safe_print(f"{Style.tag('❌', 'YT-DLP ERROR', Style.RED)} {Style.red(msg)}")
 
 
 class YtDlpBackend(BaseBackend):
@@ -146,6 +152,9 @@ class YtDlpBackend(BaseBackend):
         """Loads options from the project's modular yt-dlp config file (e.g. configs/yt-dlp.conf)."""
         cfg_path_str = self.config.get("config_file", "configs/yt-dlp.conf")
         cfg_path = Path(cfg_path_str)
+        if not cfg_path.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent
+            cfg_path = project_root / cfg_path
         if not cfg_path.exists():
             return {}
         try:
@@ -231,9 +240,9 @@ class YtDlpBackend(BaseBackend):
                     res = info_dict.get("resolution") or (f"{info_dict.get('height')}p" if info_dict.get("height") else "")
                     fmt_id = info_dict.get("format_id")
                     if title:
-                        print(f"🎬 [MEDIA] {title}")
+                        print(f"{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(title)}")
                     if res or fmt_id:
-                        print(f"🎞️  [FORMAT] Stream: {fmt_id} ({res})")
+                        print(f"{Style.tag('🎞️', 'FORMAT', Style.CYAN)} Stream: {Style.white(f'{fmt_id} ({res})')}")
 
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 downloaded = d.get("downloaded_bytes") or 0
@@ -348,14 +357,14 @@ class YtDlpBackend(BaseBackend):
             fallback_browser = self.config.get("fallback_browser_cookies")
             user_provided_cookies = task.options.get("cookies_from_browser") or task.options.get("cookies")
             if not user_provided_cookies and fallback_browser and self._is_auth_error(err_str):
-                print(f"\n⚠️  [AUTH-REQUIRED] YouTube rate-limited or requires sign-in. Automatically retrying with {fallback_browser} cookies...")
+                print(f"\n{Style.tag('⚠️', 'AUTH-REQUIRED', Style.YELLOW)} YouTube rate-limited or requires sign-in. Automatically retrying with {Style.bold(fallback_browser)} cookies...")
                 ydl_opts["cookiesfrombrowser"] = (fallback_browser,)
                 try:
                     info = await asyncio.to_thread(_run_download)
                 except Exception as retry_err:
                     retry_err_str = str(retry_err)
                     if "subtitles" in retry_err_str.lower():
-                        print(f"\n⚠️  [SUBTITLES] Subtitle download failed ({retry_err}). Retrying without subtitles...")
+                        print(f"\n{Style.tag('⚠️', 'SUBTITLES', Style.YELLOW)} Subtitle download failed ({retry_err}). Retrying without subtitles...")
                         ydl_opts["writesubtitles"] = False
                         ydl_opts["writeautomaticsub"] = False
                         try:
@@ -365,7 +374,7 @@ class YtDlpBackend(BaseBackend):
                     else:
                         raise DownloadFailedError(f"yt-dlp download failed with fallback {fallback_browser} cookies: {retry_err}")
             elif "subtitles" in err_str.lower():
-                print(f"\n⚠️  [SUBTITLES] Subtitle download rate-limited ({e}). Retrying without subtitles...")
+                print(f"\n{Style.tag('⚠️', 'SUBTITLES', Style.YELLOW)} Subtitle download rate-limited ({e}). Retrying without subtitles...")
                 ydl_opts["writesubtitles"] = False
                 ydl_opts["writeautomaticsub"] = False
                 try:

@@ -15,10 +15,16 @@ if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.terminal import Style
+
 
 def _sigint_handler(signum=None, frame=None):
     """Guarantees instant termination on Ctrl+C on Windows without getting stuck on blocked worker threads."""
-    sys.stdout.write("\n\n🛑 [ABORTED] Operation cancelled by user.\n")
+    sys.stdout.write(f"\n\n{Style.tag('🛑', 'ABORTED', Style.RED)} {Style.error('Operation cancelled by user.')}\n")
     sys.stdout.flush()
     os._exit(130)
 
@@ -49,12 +55,30 @@ def format_bytes(size: int) -> str:
 
 
 def print_progress(p: DownloadProgress):
-    """Simple terminal progress renderer."""
-    percent_str = f"{p.percent:.1f}%" if p.percent is not None else "--%"
-    speed_str = f"{format_bytes(int(p.speed_bytes_sec))}/s" if p.speed_bytes_sec else "--"
+    """Terminal progress renderer with aligned, colored output and visual progress bar."""
+    if p.percent is not None:
+        percent_text = f"{p.percent:5.1f}%"
+        tag_color = Style.GREEN if p.percent >= 100.0 else Style.CYAN
+    else:
+        percent_text = "  --% "
+        tag_color = Style.CYAN
+
+    tag_part = Style.tag("📥", percent_text, tag_color)
+    bar_part = Style.progress_bar(p.percent, width=20)
+
     downloaded_str = format_bytes(p.downloaded_bytes) if p.downloaded_bytes else "0 B"
     total_str = format_bytes(p.total_bytes) if p.total_bytes else "??"
-    sys.stdout.write(f"\r📥 [{percent_str}] {downloaded_str} / {total_str} @ {speed_str}   ")
+    sizes_part = f"{Style.white(downloaded_str)} / {Style.white(total_str)}"
+
+    speed_val = f"{format_bytes(int(p.speed_bytes_sec))}/s" if p.speed_bytes_sec else "--"
+    speed_part = f"{Style.dim('@')} {Style.speed(speed_val)}"
+
+    eta_part = ""
+    if p.eta_seconds and p.eta_seconds > 0 and (p.percent is None or p.percent < 100.0):
+        eta_m, eta_s = divmod(int(p.eta_seconds), 60)
+        eta_part = f" {Style.dim('ETA')} {Style.yellow(f'{eta_m:02d}:{eta_s:02d}')}"
+
+    sys.stdout.write(f"\r\033[K{tag_part} {bar_part} {sizes_part} {speed_part}{eta_part}")
     sys.stdout.flush()
 
 
@@ -76,17 +100,17 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
     try:
         backend = router.route(url, backend_override=backend_name)
     except MultiDLError as e:
-        print(f"\n❌ [ROUTING ERROR] {e}")
+        print(f"\n{Style.tag('❌', 'ROUTING ERROR', Style.RED)} {Style.error(str(e))}")
         return
 
-    print(f"\n🎯 [ROUTING] Target: {url}")
-    print(f"⚙️  [BACKEND] Assigned engine: [{backend.name}]")
+    print(f"\n{Style.tag('🎯', 'ROUTING', Style.CYAN)} Target: {Style.white(url)}")
+    print(f"{Style.tag('⚙️', 'BACKEND', Style.MAGENTA)} Assigned engine: {Style.engine_badge(backend.name)}")
 
     # Check Archive for existing duplicate (if enabled)
     archive_enabled = config.get("archive", "enabled", True)
     if archive_enabled and config.get("archive", "dedup_by_url", True):
         if archive.is_url_downloaded(url, backend.name):
-            print(f"⚠️ [SKIPPED] URL already recorded in archive database.")
+            print(f"{Style.tag('⚠️', 'SKIPPED', Style.YELLOW)} URL already recorded in archive database.")
             return
 
     # Organize download directory by downloader -> host/channel
@@ -94,8 +118,10 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
     if config.get("general", "organize_by_backend", True):
         target_dir = target_dir / backend.name
     if config.get("general", "organize_by_site", True):
-        host_name = URLRouter.get_host_identifier(url, backend.name)
-        target_dir = target_dir / host_name
+        # gallery-dl inherently manages site-level directory naming via {category}
+        if backend.name != "gallery-dl":
+            host_name = URLRouter.get_host_identifier(url, backend.name)
+            target_dir = target_dir / host_name
 
     task = DownloadTask(
         url=url,
@@ -105,9 +131,9 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
     )
 
     try:
-        print(f"🚀 [DOWNLOADING] Starting transfer...")
+        print(f"{Style.tag('🚀', 'DOWNLOADING', Style.BLUE)} Starting transfer...")
         entry = await backend.download(task, progress_callback=print_progress)
-        print("\n✅ [COMPLETED] Download finished successfully!")
+        print(f"\n{Style.tag('✅', 'COMPLETED', Style.GREEN)} {Style.success('Download finished successfully!')}")
 
         # Format clean path starting with ~downloads\
         raw_path = Path(entry.file_path)
@@ -117,18 +143,18 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
         except ValueError:
             clean_display_path = f"~downloads\\{raw_path.name}"
 
-        print(f"📁 [SAVED] {clean_display_path}")
+        print(f"{Style.tag('📁', 'SAVED', Style.GREEN)} {Style.path(clean_display_path)}")
 
         # Compute hash and record in archive (if enabled)
         if archive_enabled:
             entry.file_hash = ArchiveManager.calculate_file_hash(Path(entry.file_path))
             archive.add_entry(entry)
-            print(f"💾 [ARCHIVE] Logged into database.")
+            print(f"{Style.tag('💾', 'ARCHIVE', Style.CYAN)} Logged into database.")
 
     except MultiDLError as e:
-        print(f"\n❌ [FAILED] {e}")
+        print(f"\n{Style.tag('❌', 'FAILED', Style.RED)} {Style.error(str(e))}")
     except Exception as e:
-        print(f"\n❌ [ERROR] Unexpected failure: {e}")
+        print(f"\n{Style.tag('❌', 'ERROR', Style.RED)} {Style.error(f'Unexpected failure: {e}')}")
 
 
 def main():
@@ -203,24 +229,26 @@ def main():
         })
         try:
             b = router.route(args.url)
-            print(f"URL: {args.url}\nDetected Backend: {b.name}")
+            print(f"{Style.tag('🎯', 'ROUTING', Style.CYAN)} URL: {Style.white(args.url)}")
+            print(f"{Style.tag('⚙️', 'BACKEND', Style.MAGENTA)} Detected Backend: {Style.engine_badge(b.name)}")
         except MultiDLError as e:
-            print(f"Could not route: {e}")
+            print(f"{Style.tag('❌', 'ROUTING ERROR', Style.RED)} Could not route: {e}")
     elif args.command == "archive":
         config = ConfigManager()
         archive = ArchiveManager(config.archive_db_path)
         if args.stats:
             stats = archive.get_stats()
-            print(f"Total Downloads: {stats['total_count']}")
-            print(f"Total Size: {format_bytes(stats['total_bytes'])}")
-            print("By Backend:")
+            print(f"\n{Style.tag('📊', 'STATS', Style.CYAN)} {Style.bold('Download Archive Summary')}")
+            print(f"  • Total Downloads: {Style.green(str(stats['total_count']))}")
+            print(f"  • Total Size:      {Style.green(format_bytes(stats['total_bytes']))}")
+            print(f"  • By Backend:")
             for b, cnt in stats["by_backend"].items():
-                print(f"  - {b}: {cnt}")
+                print(f"    - {Style.engine_badge(b)}: {Style.white(str(cnt))}")
         elif args.search:
             results = archive.search(args.search)
-            print(f"Found {len(results)} matches:")
+            print(f"\nFound {Style.cyan(str(len(results)))} matches:")
             for r in results:
-                print(f"[{r.backend}] {r.file_name} ({r.url})")
+                print(f"  {Style.tag('📁', r.backend, Style.engine_color(r.backend))} {Style.white(r.file_name)} {Style.dim(f'({r.url})')}")
     else:
         parser.print_help()
 
