@@ -3,7 +3,7 @@ URL Router for MULTI_DOWNLOADER.
 Directs incoming URLs to the appropriate backend using a 3-tier matching engine.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from backends.base import BaseBackend
@@ -145,6 +145,62 @@ class URLRouter:
                 return self.backends[fallback_name]
 
         raise UnsupportedURLError(f"No backend available to handle URL: {url}")
+
+    @classmethod
+    def detect_backend_name(cls, url: str, backend_override: Optional[str] = None) -> str:
+        """
+        Lightweight, fast detection of backend engine name without instantiating heavy backends.
+        Uses Tier 1 DOMAIN_MAP and fast substring patterns.
+        """
+        if backend_override:
+            return backend_override.lower().replace("_", "-")
+
+        parsed = urlparse(url)
+        domain = (parsed.netloc or "").lower().split(":")[0]
+
+        # Tier 1 direct match
+        if domain in cls.DOMAIN_MAP:
+            return cls.DOMAIN_MAP[domain]
+
+        # Domain substring matching
+        for d, b in cls.DOMAIN_MAP.items():
+            if d in domain:
+                return b
+
+        # Telegram detection
+        if "t.me" in domain or "telegram.me" in domain or url.startswith("t.me/"):
+            return "telegram-dl"
+
+        # TeraBox mirror detection
+        if any(t in domain for t in ("terabox", "1024tera", "teraboxlink", "freeterabox", "mirrobox", "nephobox", "4funbox")):
+            return "terabox-dl"
+
+        # Image/gallery heuristic vs video/audio
+        if any(img in domain for img in ("image", "photo", "pic", "gallery", "album", "danbooru", "gelbooru")):
+            return "gallery-dl"
+
+        return "yt-dlp"
+
+    @classmethod
+    def create_default(cls, config: Optional[Any] = None) -> "URLRouter":
+        """Instantiates all 5 production backends with configured settings and returns a fully initialized router."""
+        from backends.cyberdrop_backend import CyberdropDlBackend
+        from backends.gallerydl_backend import GalleryDlBackend
+        from backends.telegram_backend import TelegramDlBackend
+        from backends.terabox_backend import TeraboxDlBackend
+        from backends.ytdlp_backend import YtDlpBackend
+
+        if config is None:
+            from core.config import ConfigManager
+            config = ConfigManager()
+
+        return cls({
+            "yt-dlp": YtDlpBackend(config.get_backend_config("yt-dlp")),
+            "gallery-dl": GalleryDlBackend(config.get_backend_config("gallery-dl")),
+            "telegram-dl": TelegramDlBackend(config.get_backend_config("telegram-dl")),
+            "terabox-dl": TeraboxDlBackend(config.get_backend_config("terabox-dl")),
+            "cyberdrop-dl": CyberdropDlBackend(config.get_backend_config("cyberdrop-dl")),
+        })
 
     @staticmethod
     def get_host_identifier(url: str, backend_name: str) -> str:

@@ -112,3 +112,192 @@ def test_is_interactive():
     assert isinstance(Style.is_interactive(), bool)
 
 
+def test_multibar_manager_lifecycle():
+    from core.terminal import MultiBarManager, MultiBarSlot
+    
+    mb = MultiBarManager(max_slots=3, is_tty=False)
+    assert mb.max_slots == 3
+    assert len(mb._slots) == 3
+
+    # Test engine badge width padding alignment (all padded to 14 chars inside brackets)
+    for eng in ["yt-dlp", "gallery-dl", "terabox-dl", "cyberdrop-dl", "telegram-dl", "idle"]:
+        badge = MultiBarManager._format_engine_badge(eng)
+        # Should contain the engine name in brackets
+        assert f"[{eng}]" in badge
+
+    # Assign slots
+    sid1 = mb.assign_slot("task-1", "yt-dlp", "https://youtube.com/v1")
+    assert sid1 == 1
+    assert mb._slots[1].status == "active"
+    assert mb._slots[1].backend == "yt-dlp"
+
+    sid2 = mb.assign_slot("task-2", "gallery-dl", "https://imgur.com/a/album1")
+    assert sid2 == 2
+    assert mb._slots[2].status == "active"
+
+    # Update slot metrics
+    mb.update_slot(
+        slot_id=1,
+        percent=45.2,
+        downloaded=45200000,
+        total=100000000,
+        speed=4200000,
+        title="Sample Video.mp4",
+    )
+    assert mb._slots[1].percent == 45.2
+    assert mb._slots[1].url_or_title == "Sample Video.mp4"
+
+    # Update slot 2 with batch file metrics
+    mb.update_slot(
+        slot_id=2,
+        percent=100.0,
+        downloaded=28400000,
+        title="Sample Gallery",
+        file_index=12,
+        total_files=12,
+    )
+    assert mb._slots[2].file_index == 12
+    assert mb._slots[2].total_files == 12
+
+    # Set footer counts
+    mb.set_queue_counts(remaining=14, completed=2, failed=0)
+    assert mb._remaining == 14
+    assert mb._completed == 2
+    assert mb._failed == 0
+
+    # Finish slot
+    mb.finish_slot(slot_id=1, status_type="completed")
+    assert mb._slots[1].status == "idle"
+
+    # Close canvas
+    mb.close()
+    assert mb._lines_printed == 0
+
+
+def test_multibar_manager_two_line_card_format(capsys):
+    """Verifies that MultiBarManager formats each slot across 2 distinct lines matching Drawing-1.sketchpad.png."""
+    from core.terminal import MultiBarManager
+    
+    mb = MultiBarManager(max_slots=3, is_tty=True)
+    mb.assign_slot("task-1", "gallery-dl", "Sample Gallery Title")
+    mb.update_slot(
+        slot_id=1,
+        percent=50.0,
+        downloaded=26000000,
+        total=52000000,
+        speed=4000000,
+        file_index=14,
+        total_files=28,
+    )
+    mb.assign_slot("task-2", "yt-dlp", "Big Buck Bunny 1080p")
+    mb.update_slot(
+        slot_id=2,
+        percent=50.0,
+        downloaded=26000000,
+        total=52000000,
+        speed=4000000,
+    )
+    mb.render(force=True)
+    out = capsys.readouterr().out
+
+    # Slot 1 Line 1: [Downloader]: [gallery-dl] • Sample Gallery Title
+    assert "[Downloader]:" in out
+    assert "[gallery-dl]" in out
+    assert "Sample Gallery Title" in out
+
+    # Slot 1 Line 2: 14/28 • 24.8/49.6 MB • @
+    assert "14/28" in out
+    assert "50.0%" in out
+    assert "@" in out
+
+    # Slot 2 Line 1: [Downloader]: [yt-dlp] • Big Buck Bunny 1080p
+    assert "[yt-dlp]" in out
+    assert "Big Buck Bunny 1080p" in out
+
+    # Slot 3 (idle): [Downloader]: [idle] • idle
+    assert "[idle]" in out
+
+
+def test_router_create_default_passes_config():
+    """Verifies that URLRouter.create_default passes config to all backends including yt-dlp fallback cookies."""
+    from core.config import ConfigManager
+    from core.router import URLRouter
+
+    cfg = ConfigManager()
+    cfg.set("yt_dlp", "fallback_browser_cookies", "firefox")
+    router = URLRouter.create_default(config=cfg)
+
+    ytdlp = router.backends.get("yt-dlp")
+    assert ytdlp is not None
+    assert ytdlp.config.get("fallback_browser_cookies") == "firefox"
+
+
+def test_wide_character_width_and_truncation():
+    """Verifies that fullwidth characters (e.g. \uff1a and Japanese kana) count as 2 columns and truncate safely."""
+    from core.terminal import char_width, str_width, truncate_to_width
+
+    # Fullwidth colon (used by yt-dlp on Windows to sanitize colons)
+    assert char_width("：") == 2
+    assert char_width("a") == 1
+    assert char_width("日") == 2
+
+    # String with fullwidth colon
+    title = "Pumping Strategies： Hand Expression"
+    # 'Pumping Strategies' (18) + '：' (2) + ' Hand Expression' (16) = 36 columns
+    assert str_width(title) == 36
+
+    # Truncate to 20 columns: target is 17 cols + '...'
+    truncated = truncate_to_width(title, 20)
+    assert str_width(truncated) <= 20
+    assert truncated.endswith("...")
+
+
+def test_safe_terminal_write_no_crash_on_unencodable(monkeypatch):
+    """Verifies safe_terminal_write intercepts UnicodeEncodeError gracefully."""
+    import sys
+    from core.terminal import safe_terminal_write
+
+    written = []
+
+    class MockStdout:
+        encoding = "cp1252"
+
+        def write(self, s):
+            # Simulate cp1252 charmap failure on fullwidth colon
+            if "：" in s:
+                raise UnicodeEncodeError("charmap", "：", 0, 1, "character maps to <undefined>")
+            written.append(s)
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(sys, "stdout", MockStdout())
+    # Should not raise exception
+    safe_terminal_write("Pumping Strategies： Hand Expression\n")
+    assert len(written) == 1
+    assert "?" in written[0] or "Pumping" in written[0]
+
+
+def test_multibar_manager_wide_title_rendering(capsys):
+    """Verifies MultiBarManager safely renders titles with fullwidth colons and Japanese text."""
+    from core.terminal import MultiBarManager
+
+    mb = MultiBarManager(max_slots=3, is_tty=True)
+    mb.assign_slot("task-yt", "yt-dlp", "Pumping Strategies： Hand Expression")
+    mb.update_slot(
+        slot_id=1,
+        percent=12.5,
+        downloaded=1250000,
+        total=10000000,
+        speed=1500000,
+        title="Pumping Strategies： Hand Expression",
+    )
+    mb.render(force=True)
+    out = capsys.readouterr().out
+    assert "[Downloader]:" in out
+    assert "[yt-dlp]" in out
+    assert "Pumping Strategies" in out
+
+
+
+

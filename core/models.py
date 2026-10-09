@@ -5,7 +5,7 @@ Data models representing tasks, queue items, archive entries, and progress.
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 class TaskStatus(str, Enum):
@@ -37,6 +37,7 @@ class DownloadProgress:
     current_file: Optional[str] = None
     total_files: Optional[int] = None
     file_index: Optional[int] = None
+    status_message: Optional[str] = None
 
     def update_percent(self) -> None:
         if self.total_bytes and self.total_bytes > 0:
@@ -92,3 +93,16 @@ class ArchiveEntry:
     media_type: MediaType = MediaType.UNKNOWN
     metadata: Dict[str, Any] = field(default_factory=dict)
     downloaded_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class BatchSummaryReport:
+    """Consolidated summary metrics after completing a batch of downloads."""
+    total_items: int = 0
+    succeeded_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    total_bytes: int = 0
+    elapsed_seconds: float = 0.0
+    failed_items: List[Dict[str, str]] = field(default_factory=list)
+

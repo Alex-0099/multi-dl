@@ -386,7 +386,9 @@ class CyberdropDlBackend(BaseBackend):
         # Take snapshot of files before download to isolate new transfers
         before_files = self._scan_files(out_dir)
 
-        print(f"{Style.tag('🚀', 'CYBERDROP', Style.MAGENTA)} Launching {Style.engine_badge('cyberdrop-dl')} engine...")
+        quiet = bool(task.options.get("quiet") or progress_callback is not None)
+        if not quiet:
+            print(f"{Style.tag('🚀', 'CYBERDROP', Style.MAGENTA)} Launching {Style.engine_badge('cyberdrop-dl')} engine...")
 
         stdout_lines: List[str] = []
         failover_detected = False
@@ -510,14 +512,10 @@ class CyberdropDlBackend(BaseBackend):
 
                 # Filter and style key log events cleanly
                 lower_line = line.lower()
-                if "scraping" in lower_line and ("http" in lower_line or "[" in lower_line):
-                    target_info = line.split("Scraping", 1)[-1].strip() if "Scraping" in line else line
-                    print(f"{Style.tag('🔍', 'SCRAPING', Style.CYAN)} {Style.dim(target_info)}")
-                elif "skipping" in lower_line and ("hash" in lower_line or "already" in lower_line):
-                    print(f"{Style.tag('⚠️', 'SKIPPED', Style.YELLOW)} {Style.dim('File already downloaded in database')}")
-                elif "unsupported url" in lower_line:
+                if "unsupported url" in lower_line:
                     unsupported_detected = True
-                    print(f"{Style.tag('⚠️', 'UNSUPPORTED', Style.YELLOW)} {Style.warning(line)}")
+                    if not quiet:
+                        print(f"{Style.tag('⚠️', 'UNSUPPORTED', Style.YELLOW)} {Style.warning(line)}")
                 elif (
                     line.startswith("ERROR")
                     or line.startswith("CRITICAL")
@@ -526,7 +524,14 @@ class CyberdropDlBackend(BaseBackend):
                     or "challenge failed" in lower_line
                 ):
                     failover_detected = True
-                    print(f"{Style.tag('⚠️', 'NOTICE', Style.YELLOW)} {Style.dim(line)}")
+                    if not quiet:
+                        print(f"{Style.tag('⚠️', 'NOTICE', Style.YELLOW)} {Style.dim(line)}")
+                elif not quiet:
+                    if "scraping" in lower_line and ("http" in lower_line or "[" in lower_line):
+                        target_info = line.split("Scraping", 1)[-1].strip() if "Scraping" in line else line
+                        print(f"{Style.tag('🔍', 'SCRAPING', Style.CYAN)} {Style.dim(target_info)}")
+                    elif "skipping" in lower_line and ("hash" in lower_line or "already" in lower_line):
+                        print(f"{Style.tag('⚠️', 'SKIPPED', Style.YELLOW)} {Style.dim('File already downloaded in database')}")
 
             await proc.wait()
 

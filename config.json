@@ -1,5 +1,5 @@
 {
-    "version": "4.2.3",
+    "version": "4.3.0",
     "general": {
         "download_dir": "downloads",
         "concurrent_downloads": 3,

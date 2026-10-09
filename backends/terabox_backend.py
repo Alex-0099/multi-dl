@@ -662,10 +662,11 @@ class TeraboxDlBackend(BaseBackend):
         """Executes the TeraBox download pipeline."""
         out_dir = Path(task.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        quiet = bool(task.options.get("quiet") or progress_callback is not None)
 
         short_key = self.extract_short_key(task.url)
         ndus_cookie = self._resolve_ndus_cookie(task.options)
-        if not ndus_cookie:
+        if not ndus_cookie and not quiet:
             print(f"\n{Style.tag('⚠️', 'AUTH', Style.YELLOW)} {Style.yellow('No ndus cookie provided.')}")
             print(f"  {Style.dim('1. Add ndus_cookie to configs/terabox-dl.json')}")
             print(f"  {Style.dim('2. Or set TERABOX_NDUS in your .env file')}")
@@ -720,13 +721,14 @@ class TeraboxDlBackend(BaseBackend):
         total_files = len(queue)
         total_share_bytes = sum(int(q["item"].get("size", 0)) for q in queue)
 
-        print(f"{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(share_title)}")
-        if total_files > 1:
-            print(f"{Style.tag('📦', 'BATCH', Style.MAGENTA)} Detected {Style.cyan(str(total_files))} files in share ({format_bytes(total_share_bytes)})")
+        if not quiet:
+            print(f"{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(share_title)}")
+            if total_files > 1:
+                print(f"{Style.tag('📦', 'BATCH', Style.MAGENTA)} Detected {Style.cyan(str(total_files))} files in share ({format_bytes(total_share_bytes)})")
 
         # Multi-file batch tracker or single file progress
         is_batch = total_files > 1
-        batch_tracker = _TeraboxBatchTracker(total_files=total_files, total_batch_bytes=total_share_bytes) if is_batch else None
+        batch_tracker = _TeraboxBatchTracker(total_files=total_files, total_batch_bytes=total_share_bytes) if (is_batch and not quiet) else None
 
         downloaded_paths: List[Path] = []
         max_retries = int(self.config.get("max_retries", 10))
@@ -832,13 +834,13 @@ class TeraboxDlBackend(BaseBackend):
                                                 speed=current_speed,
                                                 eta=eta_sec,
                                             )
-                                        elif progress_callback:
+                                        if progress_callback:
                                             prog = DownloadProgress(
                                                 downloaded_bytes=downloaded_now,
                                                 total_bytes=file_size,
                                                 speed_bytes_sec=current_speed,
                                                 eta_seconds=eta_sec,
-                                                current_file=filename,
+                                                current_file=share_title if is_batch else filename,
                                                 file_index=idx,
                                                 total_files=total_files,
                                             )

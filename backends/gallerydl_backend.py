@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import threading
 from typing import Any, Callable, Dict, List, Optional
 import uuid
 
@@ -49,8 +50,10 @@ class _GalleryDlBatchTracker:
     Line 2 (Bottom): Current file progress (speed, ETA, sizes, filename)
     """
 
-    def __init__(self, progress_callback: Optional[Callable[[DownloadProgress], None]] = None):
+    def __init__(self, progress_callback: Optional[Callable[[DownloadProgress], None]] = None, quiet: bool = False):
         self.progress_callback = progress_callback
+        self.quiet = quiet
+        self.album_title: str = ""
         self.total_files: Optional[int] = None
         self.completed_count: int = 0
         self.skipped_count: int = 0
@@ -86,12 +89,26 @@ class _GalleryDlBatchTracker:
                 pass
 
         title = kwdict.get("title") or album_meta.get("title")
+        if title:
+            self.album_title = str(title)
         if title and not self.title_announced:
             self.title_announced = True
-            sys.stdout.write(f"\r\033[K{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(title)}\n")
-            if self.total_files:
-                sys.stdout.write(f"\r\033[K{Style.tag('📦', 'BATCH', Style.MAGENTA)} Detected {Style.cyan(str(self.total_files))} files in gallery\n")
-            sys.stdout.flush()
+            if not self.quiet:
+                sys.stdout.write(f"\r\033[K{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(title)}\n")
+                if self.total_files:
+                    sys.stdout.write(f"\r\033[K{Style.tag('📦', 'BATCH', Style.MAGENTA)} Detected {Style.cyan(str(self.total_files))} files in gallery\n")
+                sys.stdout.flush()
+
+        if self.progress_callback:
+            msg = f"METADATA: Detected {self.total_files} files" if self.total_files else "METADATA: Fetching album metadata"
+            self.progress_callback(
+                DownloadProgress(
+                    current_file=self.album_title or "Gallery",
+                    total_files=self.total_files,
+                    file_index=self.completed_count,
+                    status_message=msg,
+                )
+            )
 
     def on_url(self, url: str, kwdict: Dict[str, Any]) -> None:
         """Called for each queued image URL."""
@@ -109,24 +126,51 @@ class _GalleryDlBatchTracker:
             self.current_filename = str(fname)
         self.current_downloaded = 0
         self.current_total = None
-        self.current_speed = None
+
+        if self.progress_callback and not self.completed_count:
+            self.progress_callback(
+                DownloadProgress(
+                    current_file=self.album_title or "Gallery",
+                    total_files=self.total_files,
+                    file_index=self.completed_count,
+                    status_message=f"Preparing: {fname}" if fname else "Queueing media URLs",
+                )
+            )
 
     def start(self, path: str) -> None:
         """Called when download starts for a specific file."""
         self.current_filename = Path(path).name
         self.current_downloaded = 0
         self.current_total = None
-        self.current_speed = None
-        self._render()
+        if not self.quiet:
+            self._render()
 
     def progress(self, bytes_total: Optional[int], bytes_downloaded: int, bytes_per_second: int) -> None:
         """Called with live byte stream progress for the current file."""
         self.current_total = bytes_total
         self.current_downloaded = bytes_downloaded
-        self.current_speed = float(bytes_per_second) if bytes_per_second else None
+        if bytes_per_second:
+            self.current_speed = float(bytes_per_second)
         if self.current_filename:
             self._file_bytes[self.current_filename] = bytes_downloaded
-        self._render()
+
+        if self.progress_callback:
+            tot_b = sum(self._file_bytes.values())
+            pct = ((self.completed_count / self.total_files) * 100.0) if self.total_files else None
+            prog = DownloadProgress(
+                downloaded_bytes=tot_b,
+                total_bytes=None,
+                speed_bytes_sec=self.current_speed,
+                percent=pct,
+                current_file=self.album_title or self.current_filename,
+                total_files=self.total_files,
+                file_index=self.completed_count,
+                status_message=self.current_filename,
+            )
+            self.progress_callback(prog)
+
+        if not self.quiet:
+            self._render()
 
     def success(self, path: str) -> None:
         """Called when a file completes downloading successfully."""
@@ -138,16 +182,24 @@ class _GalleryDlBatchTracker:
             self.current_total = p.stat().st_size
             self.current_downloaded = self.current_total
             self._file_bytes[p.name] = self.current_total
-        self._render()
 
         if self.progress_callback:
+            tot_b = sum(self._file_bytes.values())
+            pct = ((self.completed_count / self.total_files) * 100.0) if self.total_files else None
             prog = DownloadProgress(
-                file_index=len(self.downloaded_files),
-                current_file=p.name,
-                downloaded_bytes=self.current_downloaded,
-                total_bytes=self.current_total,
+                downloaded_bytes=tot_b,
+                total_bytes=None,
+                speed_bytes_sec=self.current_speed,
+                percent=pct,
+                current_file=self.album_title or p.name,
+                total_files=self.total_files,
+                file_index=self.completed_count,
+                status_message=p.name,
             )
             self.progress_callback(prog)
+
+        if not self.quiet:
+            self._render()
 
     def skip(self, path: str) -> None:
         """Called when an existing or archived file is skipped."""
@@ -158,19 +210,40 @@ class _GalleryDlBatchTracker:
         self.current_filename = p.name
         if p.exists():
             self._file_bytes[p.name] = p.stat().st_size
-        self._render()
+
+        if self.progress_callback:
+            tot_b = sum(self._file_bytes.values())
+            pct = ((self.completed_count / self.total_files) * 100.0) if self.total_files else None
+            prog = DownloadProgress(
+                downloaded_bytes=tot_b,
+                total_bytes=None,
+                speed_bytes_sec=self.current_speed,
+                percent=pct,
+                current_file=self.album_title or p.name,
+                total_files=self.total_files,
+                file_index=self.completed_count,
+                status_message=f"Skipped: {p.name}",
+            )
+            self.progress_callback(prog)
+
+        if not self.quiet:
+            self._render()
 
     def error(self, msg: str) -> None:
         """Called on gallery-dl error."""
-        sys.stdout.write(f"\r\033[K{Style.tag('❌', 'GALLERY-DL ERROR', Style.RED)} {Style.red(msg)}\n")
-        self._lines_printed = 0
-        sys.stdout.flush()
+        if not self.quiet:
+            sys.stdout.write(f"\r\033[K{Style.tag('❌', 'GALLERY-DL ERROR', Style.RED)} {Style.red(msg)}\n")
+            self._lines_printed = 0
+            sys.stdout.flush()
 
     def finish(self) -> None:
         """Finalizes the dual progress display when download completes."""
-        self._render(done=True)
+        if not self.quiet:
+            self._render(done=True)
 
     def _render(self, done: bool = False) -> None:
+        if self.quiet:
+            return
         term_width = shutil.get_terminal_size((80, 24)).columns
         max_width = max(40, term_width - 2)
 
@@ -325,47 +398,72 @@ class GalleryDlBackend(BaseBackend):
 
     name: str = "gallery-dl"
 
-    def _configure_job(self, out_dir: Optional[Path] = None, disable_archive: bool = True) -> None:
-        """Resets memory state and loads configuration from the project's config file."""
-        gdl_config.clear()
+    _init_lock = threading.Lock()
+    _pre_initialized = False
+    _config_lock = threading.Lock()
+    _configured = False
 
-        # Load engine-specific config file (e.g. configs/gallery-dl.json)
-        config_file = self.config.get("config_file", "configs/gallery-dl.json")
-        cfg_path = Path(config_file)
-        if not cfg_path.is_absolute():
-            project_root = Path(__file__).resolve().parent.parent
-            cfg_path = project_root / cfg_path
-        if not cfg_path.exists():
-            example_path = cfg_path.with_name("gallery-dl.example.json")
-            if example_path.exists():
-                cfg_path = example_path
-        if cfg_path.exists():
-            gdl_config.load([str(cfg_path.resolve())])
+    @classmethod
+    def pre_initialize(cls) -> None:
+        """Pre-initializes gallery-dl extractor registry serially to eliminate generator collision race conditions."""
+        with cls._init_lock:
+            if not cls._pre_initialized:
+                try:
+                    list(gallery_dl.extractor.extractors())
+                except Exception:
+                    pass
+                cls._pre_initialized = True
 
-        # Configure fine-grained progress notification for http and ytdl downloaders (100ms interval)
-        gdl_config.set(("downloader", "http"), "progress", 0.1)
-        gdl_config.set(("downloader", "ytdl"), "progress", 0.1)
-        gdl_config.set(("output",), "shorten", False)
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        super().__init__(config)
+        self.pre_initialize()
 
-        # Enforce MULTI_DOWNLOADER output directory override
-        if out_dir:
-            out_dir.mkdir(parents=True, exist_ok=True)
-            gdl_config.set(("extractor",), "base-directory", str(out_dir.resolve()))
+    def _configure_job(self, out_dir: Optional[Path] = None, disable_archive: bool = True, quiet: bool = False) -> None:
+        """Loads configuration from the project's config file safely without wiping active worker memory."""
+        with self._config_lock:
+            if not GalleryDlBackend._configured:
+                # Load engine-specific config file (e.g. configs/gallery-dl.json)
+                config_file = self.config.get("config_file", "configs/gallery-dl.json")
+                cfg_path = Path(config_file)
+                if not cfg_path.is_absolute():
+                    project_root = Path(__file__).resolve().parent.parent
+                    cfg_path = project_root / cfg_path
+                if not cfg_path.exists():
+                    example_path = cfg_path.with_name("gallery-dl.example.json")
+                    if example_path.exists():
+                        cfg_path = example_path
+                if cfg_path.exists():
+                    gdl_config.load([str(cfg_path.resolve())])
 
-        # Pause gallery-dl internal sqlite archives during test mode if requested
-        if disable_archive:
-            gdl_config.set(("extractor",), "archive", None)
+                # Configure fine-grained progress notification for http and ytdl downloaders (100ms interval)
+                gdl_config.set(("downloader", "http"), "progress", 0.1)
+                gdl_config.set(("downloader", "ytdl"), "progress", 0.1)
+                gdl_config.set(("output",), "shorten", False)
 
-        # Disable netrc lookups to prevent unwanted 'No authentication info' warnings
-        gdl_config.set((), "netrc", False)
+                # Pause gallery-dl internal sqlite archives during test mode if requested
+                if disable_archive:
+                    gdl_config.set(("extractor",), "archive", None)
 
-        # Route gallery-dl logger through MULTI_DOWNLOADER terminal handler
-        gdl_logger = logging.getLogger("gallery-dl")
-        gdl_logger.handlers = [_GalleryDlLogHandler()]
-        gdl_logger.propagate = False
+                # Disable netrc lookups to prevent unwanted 'No authentication info' warnings
+                gdl_config.set((), "netrc", False)
+                GalleryDlBackend._configured = True
+
+            # Enforce MULTI_DOWNLOADER output directory override
+            if out_dir:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                gdl_config.set(("extractor",), "base-directory", str(out_dir.resolve()))
+
+            # Route gallery-dl logger through MULTI_DOWNLOADER terminal handler
+            gdl_logger = logging.getLogger("gallery-dl")
+            if quiet:
+                gdl_logger.handlers = []
+            elif not gdl_logger.handlers:
+                gdl_logger.handlers = [_GalleryDlLogHandler()]
+            gdl_logger.propagate = False
 
     def can_handle(self, url: str) -> bool:
         """Query gallery-dl's extractor registry for support."""
+        self.pre_initialize()
         try:
             extractor = gallery_dl.extractor.find(url)
             return extractor is not None
@@ -393,12 +491,13 @@ class GalleryDlBackend(BaseBackend):
         """Download images/galleries using gallery-dl."""
         out_dir = Path(task.output_dir)
         tracker: Optional[_GalleryDlBatchTracker] = None
+        quiet = bool(task.options.get("quiet") or progress_callback is not None)
 
         def _run_download() -> int:
             nonlocal tracker
-            self._configure_job(out_dir=out_dir)
+            self._configure_job(out_dir=out_dir, quiet=quiet)
 
-            tracker = _GalleryDlBatchTracker(progress_callback=progress_callback)
+            tracker = _GalleryDlBatchTracker(progress_callback=progress_callback, quiet=quiet)
             dl_job = _MultiDlGalleryJob(task.url, tracker=tracker)
             return dl_job.run()
 

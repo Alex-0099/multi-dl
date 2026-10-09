@@ -2,12 +2,13 @@
 
 > A modern, unified multi-platform downloader orchestrating [`yt-dlp`](https://github.com/yt-dlp/yt-dlp), [`gallery-dl`](https://github.com/mikf/gallery-dl), [`terabox-dl`](https://github.com/Alex-0099/Terabox-DL), [`telegram-dl`](https://github.com/Alex-0099/Telegram-dl), and [`cyberdrop-dl`](https://github.com/Cyberdrop-DL/cyberdrop-dl) with isolated configurations, shared SQLite deduplication archive, persistent priority queue, two-way automatic failover, and interactive terminal interface.
 
-**Current Version:** `v4.2.3`
+**Current Version:** `v4.3.0`
 
 ---
 
 ## 📋 Changelog
 
+* **v4.3.0 (Concurrent Multi-Engine Queue & Dispatcher)**: Fast pre-routing ingestion, intelligent per-engine concurrency guards (Telegram max 1, yt-dlp max 2), atomic multi-stream progress canvas, retry handling, and consolidated batch summary reports.
 * **v4.x.x (`cyberdrop-dl`)**: Subprocess engine integration for file lockers & forums, live SQLite progress tracking, directory hierarchy normalization, existing-file skip detection, and bidirectional failover.
 * **v3.x.x (`telegram-dl`)**: Native Telethon client for public/private Telegram channels & chats, interactive CLI authentication wizard (`multi-dl auth`), and engine auto-updater (`multi-dl -U`).
 * **v2.x.x (`terabox-dl`)**: Native TeraBox engine port with JS token scraping, dynamic direct links, multi-chunk threaded streaming, HTTP Range resume, and interactive TUI mode (`multi-dl -i`).
@@ -79,15 +80,55 @@ python multi-dl.py "https://terabox.com/s/1abcdef..."
 python multi-dl.py "https://t.me/channel_name/123"
 ```
 
-### 2. Interactive Mode (TUI)
-Launch an interactive session to rapidly paste multiple links:
+### 2. Immediate Batch Downloads & Concurrency
+Pass a text file of URLs or multiple links to download them immediately in parallel with real-time multi-stream progress bars (processed via `data/batch_queue.json`, keeping your persistent `data/queue.json` untouched):
+```powershell
+# Directly pass a text file of links (executes immediately with concurrent streams):
+python multi-dl.py links.txt
+python multi-dl.py C:\Users\LENOVO\src\urls.txt
+
+# Customize concurrency level (e.g. 5 parallel streams):
+python multi-dl.py links.txt -c 5
+
+# Pass multiple links directly:
+python multi-dl.py "https://youtu.be/..." "https://imgur.com/a/..." -c 4
+```
+
+### 3. Persistent Queue Management (`multi-dl queue`)
+Queue downloads for later without executing them immediately (stored in `data/queue.json`):
+```powershell
+# Queue links from a text file or URL arguments for later (does NOT download now):
+python multi-dl.py queue add links.txt
+python multi-dl.py queue add "https://www.youtube.com/watch?v=..." "https://imgur.com/a/..."
+
+# Set priority on queued items:
+python multi-dl.py queue add links.txt -p 10
+
+# List all queued downloads awaiting execution:
+python multi-dl.py queue list
+python multi-dl.py queue list --status failed
+
+# Start the concurrent worker pool when you are ready to download:
+python multi-dl.py queue start
+python multi-dl.py queue start -c 4
+
+# Retry all failed downloads:
+python multi-dl.py queue retry
+
+# Clear queue items:
+python multi-dl.py queue clear
+python multi-dl.py queue clear --status completed
+```
+
+### 4. Interactive Mode (TUI)
+Launch an interactive session to paste single URLs, multiple pasted links, or paths to `.txt` files:
 ```powershell
 python multi-dl.py -i
 # or
 python multi-dl.py interactive
 ```
 
-### 3. Engine Authentication Wizard
+### 5. Engine Authentication Wizard
 Configure credentials for Telegram (API ID, Hash, 2FA) or TeraBox (`ndus` cookie):
 ```powershell
 python multi-dl.py auth
@@ -96,7 +137,7 @@ python multi-dl.py auth telegram
 python multi-dl.py auth terabox
 ```
 
-### 4. Engine Auto-Updater
+### 6. Engine Auto-Updater
 Check for and apply updates across all download engines:
 ```powershell
 # Update everything:
@@ -110,14 +151,14 @@ python multi-dl.py update gallery-dl
 python multi-dl.py update cyberdrop-dl
 ```
 
-### 5. Force a Specific Backend
+### 7. Force a Specific Backend
 Override automatic routing and force an engine:
 ```powershell
 python multi-dl.py "https://example.com/media" --backend gallery-dl
 python multi-dl.py "https://example.com/media" --backend cyberdrop-dl
 ```
 
-### 6. Authentication & Cookies (Age-Gated / Member Media)
+### 8. Authentication & Cookies (Age-Gated / Member Media)
 ```powershell
 # Extract session cookies directly from your web browser:
 python multi-dl.py "https://www.youtube.com/watch?v=..." --cookies-from-browser chrome
@@ -130,12 +171,12 @@ python multi-dl.py "https://example.com/video" --cookies "cookies.txt"
 python multi-dl.py "https://terabox.com/s/..." --ndus "YOUR_NDUS_COOKIE"
 ```
 
-### 7. Custom Formats & Quality
+### 9. Custom Formats & Quality
 ```powershell
 python multi-dl.py "https://www.youtube.com/watch?v=..." -f "bestvideo*+bestaudio/best"
 ```
 
-### 8. Inspect SQLite Download Archive
+### 10. Inspect SQLite Download Archive
 ```powershell
 # View archive metrics and statistics:
 python multi-dl.py archive --stats
@@ -144,12 +185,12 @@ python multi-dl.py archive --stats
 python multi-dl.py archive --search "search_term"
 ```
 
-### 9. Test URL Routing
+### 11. Test URL Routing
 ```powershell
 python multi-dl.py route "https://imgur.com/a/sample_album"
 ```
 
-### 10. Check Version
+### 12. Check Version
 ```powershell
 python multi-dl.py -v
 # or
@@ -229,11 +270,11 @@ The primary configuration file at the project root connects all engines, sets do
 ```
 MULTI_DOWNLOADER/
 ├── backends/         # Engine adapters (yt-dlp, gallery-dl, terabox-dl, telegram-dl, cyberdrop-dl)
-├── core/             # Core logic (URL router, archive database, queue, config, updater, terminal UI)
+├── core/             # Core logic (URL router, archive database, queue, dispatcher, config, updater, terminal UI)
 ├── configs/          # Dedicated sandbox configuration files for each engine
-├── data/             # Persistent SQLite archive (archive.db) and runtime cache
+├── data/             # Persistent SQLite archive (archive.db), download queue (queue.json), and runtime cache
 ├── downloads/        # Output root: downloads/<engine>/<site>/<file>
-├── tests/            # Automated test suite (58 unit & integration tests)
+├── tests/            # Automated test suite (66 unit & integration tests)
 ├── config.json       # Master configuration file
 ├── multi-dl.py       # Main CLI & interactive entry point
 └── requirements.txt  # Python environment dependencies
@@ -263,4 +304,4 @@ Run the automated test suite with pytest:
 .\.venv\Scripts\pytest -v
 ```
 
-All 58 test cases covering routing, all 5 engine adapters, configuration isolation, updater, and terminal UI pass.
+All 66 test cases covering routing, pre-routing classification, queue dispatcher, concurrency limits, all 5 engine adapters, configuration isolation, updater, and terminal UI pass.

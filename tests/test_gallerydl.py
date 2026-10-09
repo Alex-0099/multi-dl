@@ -121,5 +121,38 @@ async def test_gallerydl_failover_to_cyberdrop(monkeypatch, tmp_path):
         mock_cdl_instance.download.assert_called_once()
 
 
+def test_gallerydl_concurrent_thread_safety():
+    """Verifies that multiple concurrent threads can instantiate jobs without generator already executing error."""
+    import threading
+    from gallery_dl import job
+
+    GalleryDlBackend.pre_initialize()
+
+    errors = []
+
+    def run_worker(url):
+        try:
+            j = job.DownloadJob(url)
+            assert j is not None
+        except Exception as e:
+            errors.append((url, e))
+
+    urls = [
+        "https://nhentai.net/g/361344/",
+        "https://nhentai.net/g/576655/",
+        "https://imgur.com/gallery/abcde",
+        "https://danbooru.donmai.us/posts/12345",
+    ]
+
+    threads = [threading.Thread(target=run_worker, args=(u,)) for u in urls]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(errors) == 0, f"Thread safety errors encountered: {errors}"
+
+
+
 
 

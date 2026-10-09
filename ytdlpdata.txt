@@ -1,0 +1,38 @@
+Enter URL: https://nhentai.net/g/533286/
+
+🚀 [DOWNLOADING] Starting transfer...
+
+ MULTI_DOWNLOADER ─ Active Download (1 Worker)
+
+[Downloader]: [gallery-dl] • [Gomikasu Tarou (Namaribou Nayonayo)] Boku... Josei You Fuuzoku de Beit S...
+[━─────────────] 3.8% • 2/52 • 648.4 KB/?? • @ 200.14 KB/s • [nhentai_533286_003.jpg]
+
+Queue: 1 remaining • 0 completed • 0 failed
+
+
+
+
+After comleating download no report, How about a simple report before prompting or asking for next url?
+
+
+
+Enter URL: https://nhentai.net/g/533286/
+
+🚀 [DOWNLOADING] Starting transfer...
+
+
+──────────────────────────────────────────────────────────────────
+
+Enter URL:
+
+
+
+
+
+
+
+
+
+
+
+

@@ -71,6 +71,11 @@ class ConfigManager:
             return (self.PROJECT_ROOT / p).resolve()
         return p.resolve()
 
+    @property
+    def archive_enabled(self) -> bool:
+        """Checks if the SQLite deduplication archive is enabled."""
+        return bool(self.get("archive", "enabled", True))
+
     def get_backend_config(self, backend_name: str) -> Dict[str, Any]:
         """Returns isolated dictionary settings for a specific backend."""
         # Normalize name (yt-dlp -> yt_dlp)

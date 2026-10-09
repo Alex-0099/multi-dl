@@ -7,6 +7,7 @@ import asyncio
 from pathlib import Path
 import shutil
 import sys
+import threading
 from typing import Any, Callable, Dict, Optional
 import uuid
 
@@ -22,11 +23,16 @@ from core.terminal import Style
 class YtDlpStatusLogger:
     """Formats yt-dlp extraction and challenge events into concise terminal status messages."""
 
-    def __init__(self):
+    def __init__(self, quiet: bool = False, on_status: Optional[Callable[[str], None]] = None):
+        self.quiet = quiet
+        self.on_status = on_status
         self._last_msg = ""
         self.last_error = ""
+        self.current_status = ""
 
     def _safe_print(self, text: str):
+        if self.quiet:
+            return
         if text != self._last_msg:
             self._last_msg = text
             try:
@@ -39,21 +45,37 @@ class YtDlpStatusLogger:
                 print(text)
 
     def _handle_log(self, msg: str):
+        status = None
         if "[pot:bgutil:http]" in msg:
+            status = "PO-TOKEN: Generating token via sidecar"
             self._safe_print(f"{Style.tag('⚙️', 'PO-TOKEN', Style.MAGENTA)} Generating Proof-of-Origin token via sidecar...")
         elif "[jsc:" in msg or "Solving JS challenges" in msg:
+            status = "CHALLENGE: Solving JS challenge"
             self._safe_print(f"{Style.tag('⚡', 'CHALLENGE', Style.YELLOW)} Solving JavaScript challenge...")
         elif "Downloading webpage" in msg:
+            status = "METADATA: Fetching media webpage"
             self._safe_print(f"{Style.tag('🌐', 'METADATA', Style.CYAN)} Fetching media webpage...")
         elif "Downloading player" in msg:
+            status = "PLAYER: Loading YouTube player"
             self._safe_print(f"{Style.tag('📜', 'PLAYER', Style.BLUE)} Loading YouTube player scripts...")
         elif "Downloading initial data" in msg or "Downloading visionos" in msg or "Downloading web" in msg:
+            status = "EXTRACTOR: Querying player APIs"
             self._safe_print(f"{Style.tag('🔍', 'EXTRACTOR', Style.CYAN)} Querying YouTube player APIs...")
         elif "Downloading m3u8" in msg or "Downloading MPD" in msg:
+            status = "STREAMS: Resolving DASH/HLS manifests"
             self._safe_print(f"{Style.tag('📡', 'STREAMS', Style.BLUE)} Resolving adaptive DASH/HLS stream manifests...")
         elif "[download] Destination:" in msg:
             filename = msg.split("Destination:")[-1].strip()
+            status = f"Preparing: {Path(filename).name}"
             self._safe_print(f"{Style.tag('🎯', 'TARGET', Style.YELLOW)} Preparing output stream: {Style.white(Path(filename).name)}")
+
+        if status:
+            self.current_status = status
+            if self.on_status:
+                try:
+                    self.on_status(status)
+                except Exception:
+                    pass
 
     def debug(self, msg: str):
         self._handle_log(msg)
@@ -73,7 +95,8 @@ class YtDlpStatusLogger:
 
     def error(self, msg: str):
         self.last_error = msg
-        self._safe_print(f"{Style.tag('❌', 'YT-DLP ERROR', Style.RED)} {Style.red(msg)}")
+        if not self.quiet:
+            self._safe_print(f"{Style.tag('❌', 'YT-DLP ERROR', Style.RED)} {Style.red(msg)}")
 
 
 class YtDlpBackend(BaseBackend):
@@ -81,17 +104,36 @@ class YtDlpBackend(BaseBackend):
 
     name: str = "yt-dlp"
 
+    _init_lock = threading.Lock()
+    _pre_initialized = False
+
+    @classmethod
+    def pre_initialize(cls) -> None:
+        """Pre-initializes yt-dlp plugin extractors serially to prevent multi-threading registration race conditions."""
+        with cls._init_lock:
+            if not cls._pre_initialized:
+                try:
+                    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as _:
+                        pass
+                except Exception:
+                    pass
+                cls._pre_initialized = True
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        super().__init__(config)
+        self.pre_initialize()
+
     def _is_youtube(self, url: str) -> bool:
         """Determines if the given URL targets YouTube."""
         u = url.lower()
         return "youtube.com" in u or "youtu.be" in u
 
-    def _ensure_po_provider_if_needed(self, url: str) -> None:
+    def _ensure_po_provider_if_needed(self, url: str, silent: bool = False) -> None:
         """Auto-starts local PO Token provider sidecar if downloading from YouTube."""
         if self._is_youtube(url) and self.config.get("auto_start_po_provider", True):
             host = self.config.get("po_provider_host", "127.0.0.1")
             port = self.config.get("po_provider_port", 4416)
-            POTManager.ensure_server_running(host=host, port=port)
+            POTManager.ensure_server_running(host=host, port=port, silent=silent)
 
     def _resolve_ffmpeg(self) -> Optional[str]:
         """Locates ffmpeg from config or checks standard paths."""
@@ -133,6 +175,9 @@ class YtDlpBackend(BaseBackend):
             "please sign in",
             "confirm your age",
             "age-restricted",
+            "inappropriate",
+            "age gate",
+            "requires authentication",
             "login_required",
             "cookies-from-browser",
             "cookies for the authentication",
@@ -223,47 +268,71 @@ class YtDlpBackend(BaseBackend):
         progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
     ) -> ArchiveEntry:
         """Downloads media using yt-dlp with real-time progress callbacks."""
-        self._ensure_po_provider_if_needed(task.url)
+        quiet = bool(task.options.get("quiet") or progress_callback is not None)
+        self._ensure_po_provider_if_needed(task.url, silent=quiet)
         out_dir = Path(task.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         downloaded_filepath = None
         announced_media = False
 
+        def _on_logger_status(status_str: str):
+            if progress_callback:
+                progress_callback(
+                    DownloadProgress(
+                        status_message=status_str,
+                        total_files=1,
+                        file_index=1,
+                    )
+                )
+
+        status_logger = YtDlpStatusLogger(quiet=quiet, on_status=_on_logger_status)
+
         def _yt_progress_hook(d: Dict[str, Any]):
             nonlocal downloaded_filepath, announced_media
-            if d.get("status") == "downloading":
-                if not announced_media:
-                    announced_media = True
+            try:
+                if d.get("status") == "downloading":
                     info_dict = d.get("info_dict", {})
-                    title = info_dict.get("title")
-                    res = info_dict.get("resolution") or (f"{info_dict.get('height')}p" if info_dict.get("height") else "")
-                    fmt_id = info_dict.get("format_id")
-                    if title:
-                        print(f"{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(title)}")
-                    if res or fmt_id:
-                        print(f"{Style.tag('🎞️', 'FORMAT', Style.CYAN)} Stream: {Style.white(f'{fmt_id} ({res})')}")
+                    title = info_dict.get("title") or (Path(d.get("filename", "")).name if d.get("filename") else "")
+                    if not announced_media:
+                        announced_media = True
+                        if not quiet:
+                            res = info_dict.get("resolution") or (f"{info_dict.get('height')}p" if info_dict.get("height") else "")
+                            fmt_id = info_dict.get("format_id")
+                            if title:
+                                print(f"{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(title)}")
+                            if res or fmt_id:
+                                print(f"{Style.tag('🎞️', 'FORMAT', Style.CYAN)} Stream: {Style.white(f'{fmt_id} ({res})')}")
 
-                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-                downloaded = d.get("downloaded_bytes") or 0
-                speed = d.get("speed")
-                eta = d.get("eta")
+                    total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                    downloaded = d.get("downloaded_bytes") or 0
+                    speed = d.get("speed")
+                    eta = d.get("eta")
 
-                prog = DownloadProgress(
-                    downloaded_bytes=downloaded,
-                    total_bytes=total,
-                    speed_bytes_sec=speed,
-                    eta_seconds=eta,
-                    current_file=d.get("filename"),
-                )
-                prog.update_percent()
-                if progress_callback:
-                    progress_callback(prog)
+                    stream_file = Path(d.get("filename", "")).name if d.get("filename") else ""
+                    active_status = stream_file or status_logger.current_status or "Downloading media"
 
-            elif d.get("status") == "finished":
-                downloaded_filepath = d.get("filename")
-                sys.stdout.write("\n")
-                sys.stdout.flush()
+                    prog = DownloadProgress(
+                        downloaded_bytes=downloaded,
+                        total_bytes=total,
+                        speed_bytes_sec=speed,
+                        eta_seconds=eta,
+                        current_file=title or d.get("filename"),
+                        total_files=1,
+                        file_index=1,
+                        status_message=active_status,
+                    )
+                    prog.update_percent()
+                    if progress_callback:
+                        progress_callback(prog)
+
+                elif d.get("status") == "finished":
+                    downloaded_filepath = d.get("filename")
+                    if not quiet:
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+            except Exception:
+                pass
 
         # Built-in defaults: bypass GVS PO token skips for age-restricted / DASH formats
         extractor_args = {
@@ -287,7 +356,6 @@ class YtDlpBackend(BaseBackend):
                 elif isinstance(extractor_args[k], dict) and isinstance(v, dict):
                     extractor_args[k].update(v)
 
-        status_logger = YtDlpStatusLogger()
         ydl_opts = self._load_config_file_opts()
         ydl_opts.update({
             "ignoreconfig": True,  # Complete isolation from standalone yt-dlp configs
@@ -301,16 +369,27 @@ class YtDlpBackend(BaseBackend):
             "remote_components": ["ejs:github"],  # Automatic JS challenge solver for age-restricted / n-sig
             "extractor_args": extractor_args,
         })
+        if quiet:
+            ydl_opts["quiet"] = True
+            ydl_opts["no_warnings"] = True
 
         # Post-processor hook to capture final merged file (e.g. .mp4 instead of temp .webm/.m4a)
         final_filepath = None
         def _yt_postprocessor_hook(d: Dict[str, Any]):
             nonlocal final_filepath
-            if d.get("status") == "finished":
-                # Check for merged output
+            if d.get("status") == "started":
+                postprocessor = d.get("postprocessor", "")
+                msg = f"FFMPEG: Processing ({postprocessor})" if postprocessor else "FFMPEG: Merging formats into MP4"
+                status_logger.current_status = msg
+                if progress_callback:
+                    progress_callback(DownloadProgress(status_message=msg, total_files=1, file_index=1, percent=100.0))
+            elif d.get("status") == "finished":
                 merged = d.get("info_dict", {}).get("_filename")
                 if merged and Path(merged).exists():
                     final_filepath = merged
+                status_logger.current_status = "FFMPEG: Merge completed"
+                if progress_callback:
+                    progress_callback(DownloadProgress(status_message="FFMPEG: Merge completed", total_files=1, file_index=1, percent=100.0))
 
         ydl_opts["postprocessor_hooks"] = [_yt_postprocessor_hook]
 
@@ -353,18 +432,28 @@ class YtDlpBackend(BaseBackend):
         try:
             info = await asyncio.to_thread(_run_download)
         except Exception as e:
-            err_str = str(e) or status_logger.last_error
+            err_str = f"{str(e)} {status_logger.last_error}".strip()
             fallback_browser = self.config.get("fallback_browser_cookies")
             user_provided_cookies = task.options.get("cookies_from_browser") or task.options.get("cookies")
             if not user_provided_cookies and fallback_browser and self._is_auth_error(err_str):
-                print(f"\n{Style.tag('⚠️', 'AUTH-REQUIRED', Style.YELLOW)} YouTube rate-limited or requires sign-in. Automatically retrying with {Style.bold(fallback_browser)} cookies...")
+                auth_msg = f"AUTH: Retrying with {fallback_browser} cookies"
+                status_logger.current_status = auth_msg
+                if progress_callback:
+                    progress_callback(DownloadProgress(status_message=auth_msg, total_files=1, file_index=1))
+                if not quiet:
+                    print(f"\n{Style.tag('⚠️', 'AUTH-REQUIRED', Style.YELLOW)} YouTube rate-limited or requires sign-in. Automatically retrying with {Style.bold(fallback_browser)} cookies...")
                 ydl_opts["cookiesfrombrowser"] = (fallback_browser,)
                 try:
                     info = await asyncio.to_thread(_run_download)
                 except Exception as retry_err:
                     retry_err_str = str(retry_err)
                     if "subtitles" in retry_err_str.lower():
-                        print(f"\n{Style.tag('⚠️', 'SUBTITLES', Style.YELLOW)} Subtitle download failed ({retry_err}). Retrying without subtitles...")
+                        sub_msg = "SUBTITLES: Retrying without subtitles"
+                        status_logger.current_status = sub_msg
+                        if progress_callback:
+                            progress_callback(DownloadProgress(status_message=sub_msg, total_files=1, file_index=1))
+                        if not quiet:
+                            print(f"\n{Style.tag('⚠️', 'SUBTITLES', Style.YELLOW)} Subtitle download failed ({retry_err}). Retrying without subtitles...")
                         ydl_opts["writesubtitles"] = False
                         ydl_opts["writeautomaticsub"] = False
                         try:
@@ -374,7 +463,12 @@ class YtDlpBackend(BaseBackend):
                     else:
                         raise DownloadFailedError(f"yt-dlp download failed with fallback {fallback_browser} cookies: {retry_err}")
             elif "subtitles" in err_str.lower():
-                print(f"\n{Style.tag('⚠️', 'SUBTITLES', Style.YELLOW)} Subtitle download rate-limited ({e}). Retrying without subtitles...")
+                sub_msg = "SUBTITLES: Retrying without subtitles"
+                status_logger.current_status = sub_msg
+                if progress_callback:
+                    progress_callback(DownloadProgress(status_message=sub_msg, total_files=1, file_index=1))
+                if not quiet:
+                    print(f"\n{Style.tag('⚠️', 'SUBTITLES', Style.YELLOW)} Subtitle download rate-limited ({e}). Retrying without subtitles...")
                 ydl_opts["writesubtitles"] = False
                 ydl_opts["writeautomaticsub"] = False
                 try:

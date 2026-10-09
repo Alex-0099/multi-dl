@@ -607,6 +607,7 @@ class TelegramDlBackend(BaseBackend):
         if chat_id is None:
             raise DownloadFailedError(f"Could not parse valid Telegram chat or message from: {task.url}")
 
+        quiet = bool(task.options.get("quiet") or progress_callback is not None)
         try:
             client = await self._ensure_client()
             entity = await client.get_entity(chat_id)
@@ -641,13 +642,16 @@ class TelegramDlBackend(BaseBackend):
                 total_items = len(messages_to_download)
                 total_bytes = sum(_get_file_size(m) for m in messages_to_download)
 
-                if total_items > 1:
-                    print(f"{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(f'{chat_title} (Album of {total_items} items)')}")
-                    print(f"{Style.tag('📦', 'BATCH', Style.MAGENTA)} Detected {Style.cyan(str(total_items))} items in album ({format_bytes(total_bytes)})")
-                    tracker = _TelegramBatchTracker(total_files=total_items, total_batch_bytes=total_bytes)
+                if not quiet:
+                    if total_items > 1:
+                        print(f"{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(f'{chat_title} (Album of {total_items} items)')}")
+                        print(f"{Style.tag('📦', 'BATCH', Style.MAGENTA)} Detected {Style.cyan(str(total_items))} items in album ({format_bytes(total_bytes)})")
+                        tracker = _TelegramBatchTracker(total_files=total_items, total_batch_bytes=total_bytes)
+                    else:
+                        media_name = _get_message_filename(msg)
+                        print(f"{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(f'{chat_title} / {media_name}')}")
+                        tracker = None
                 else:
-                    media_name = _get_message_filename(msg)
-                    print(f"{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(f'{chat_title} / {media_name}')}")
                     tracker = None
 
                 for idx, m in enumerate(messages_to_download, 1):
@@ -658,13 +662,13 @@ class TelegramDlBackend(BaseBackend):
                     def _prog_hook(received: int, total: int, speed: float, eta: Optional[int]):
                         if tracker:
                             tracker.update_file(filename, received, total, speed, eta)
-                        elif progress_callback:
+                        if progress_callback:
                             prog = DownloadProgress(
                                 downloaded_bytes=received,
                                 total_bytes=total,
                                 speed_bytes_sec=speed,
                                 eta_seconds=eta,
-                                current_file=filename,
+                                current_file=clean_chat_title if total_items > 1 else filename,
                                 file_index=idx,
                                 total_files=total_items,
                             )
