@@ -1,87 +1,18 @@
 # MULTI_DOWNLOADER
 
-> A modern, unified multi-platform downloader orchestrating `yt-dlp`, `gallery-dl`, `terabox-dl`, `telegram-dl`, and `cyberdrop-dl` with isolated configurations, shared SQLite deduplication archive, persistent priority queue, two-way automatic failover, and interactive terminal interface.
+> A modern, unified multi-platform downloader orchestrating [`yt-dlp`](https://github.com/yt-dlp/yt-dlp), [`gallery-dl`](https://github.com/mikf/gallery-dl), [`terabox-dl`](https://github.com/Alex-0099/Terabox-DL), [`telegram-dl`](https://github.com/Alex-0099/Telegram-dl), and [`cyberdrop-dl`](https://github.com/Cyberdrop-DL/cyberdrop-dl) with isolated configurations, shared SQLite deduplication archive, persistent priority queue, two-way automatic failover, and interactive terminal interface.
+
+**Current Version:** `v4.2.3`
 
 ---
 
-## 📌 Versioning Scheme
+## 📋 Changelog
 
-* **Current Version:** `4.2.3`
-* **Version Format:** `MAJOR.MINOR.PATCH`
-  * `+1.0.0` : Full Downloader Implementation / New Backend Architecture
-  * `+0.1.0` : Significant Feature Addition within an implementation
-  * `+0.0.1` : Bug fix, performance polish, or patch
-
-### Detailed Changelog:
-
-#### ⚡ Version 4.x — `cyberdrop-dl` Engine Implementation
-* **v4.2.3 (Bug Fix - Existing File Skip Detection & Reporting):**
-  * Fixed misleading `[COMPLETED]` notifications when all files in a job were already present on disk and skipped by `gallery-dl`.
-  * Added distinct `[SKIPPED]` / `[EXISTING]` status feedback and path resolution for existing files to eliminate confusion.
-* **v4.2.2 (Bug Fix - CyberDrop Partial-Failure Recovery):**
-  * Added validation ensuring partial album downloads or dropped network connections (e.g., GoFile / Bunkr drops) are never falsely committed to the SQLite archive database as successful completions.
-* **v4.2.1 (Bug Fix - CyberDrop Directory Normalization):**
-  * Implemented directory normalization (`_flatten_loose_files` and `_deduplicate_domain_folder`) matching `gallery-dl`'s single-level site hierarchy (`downloads/cyberdrop-dl/<domain>/<files>`).
-  * Eliminated redundant domain-in-domain folder nesting (e.g. `gofile_io/gofile.io/...`).
-* **v4.2.0 (Feature - Two-Way Failover & Locker Priority Routing):**
-  * Configured default priority routing for common lockers (`bunkr`, `gofile`, `pixeldrain`, `catbox`, `coomer`, `kemono`, `erome`, `fapello`, `simpcity`) to `gallery-dl` for optimal single-file reliability.
-  * Added bidirectional automatic failover: automatically falls back to `cyberdrop-dl` if `gallery-dl` encounters unsupported forum/locker variations, and vice versa.
-* **v4.1.0 (Feature - Live Real-Time Byte & File Progress Tracker):**
-  * Implemented live SQLite monitoring on `cyberdrop.db` and fallback HTTP `Content-Length` header probing to resolve file sizes and render dynamic progress bars, speeds, and ETA even on lockers hiding content lengths (`??`).
-* **v4.0.0 (New Engine - `cyberdrop-dl` Integration):**
-  * Added `CyberdropDlBackend` (`backends/cyberdrop_backend.py`) wrapping the `cyberdrop-dl` CLI in an isolated subprocess.
-  * Dynamic runtime config sandbox (`configs/cyberdrop-dl.json`), dedicated lockfile isolation, and downloads redirection.
-  * Extends platform coverage across hundreds of file lockers, forums, image hosts, and video hosts.
-
-#### ✈️ Version 3.x — `telegram-dl` Engine Implementation
-* **v3.2.1 (Bug Fix - Telethon Event Loop & FloodWait):**
-  * Fixed Telethon async loop lifecycle handling and added graceful recovery for Telegram API `FloodWait` penalties.
-* **v3.2.0 (Feature - Engine Auto-Updater):**
-  * Integrated unified `EngineUpdater` (`core/updater.py`), accessible via `multi-dl -U` or `multi-dl update [engine]`, managing pip packages and git repositories.
-* **v3.1.0 (Feature - Interactive Authentication Wizard):**
-  * Added `multi-dl auth` / `multi-dl login` command providing guided CLI onboarding for Telegram API ID, API Hash, phone verification code, and 2FA password.
-* **v3.0.0 (New Engine - `telegram-dl` Integration):**
-  * Embedded native Telethon client (`backends/telegram_backend.py`) supporting downloading public and private channels, supergroups, direct messages, and chat media queues.
-  * Session file persistence (`telegram_dl_session.session`) and selective media filtering.
-
-#### 📦 Version 2.x — `terabox-dl` Engine Implementation
-* **v2.1.1 (Bug Fix - TeraBox Session Cookie & Chunk Streams):**
-  * Added `ndus` session cookie injection and stream connection retry handling.
-* **v2.1.0 (Feature - Interactive Mode TUI):**
-  * Added `multi-dl -i` / `multi-dl interactive` live loop mode for rapid multi-link pasting and queueing.
-* **v2.0.0 (New Engine - `terabox-dl` Integration):**
-  * Ported native TeraBox downloader (`backends/terabox_backend.py`) featuring JavaScript token scraping, dynamic direct link resolution, multi-threaded chunk downloading, and HTTP `Range` request resuming.
-
-#### 🖼️ Version 1.x — `gallery-dl` Engine Implementation
-* **v1.1.1 (Bug Fix - Path Resolution & Sandboxed Folders):**
-  * Fixed relative path resolution and output directory normalization across galleries.
-* **v1.1.0 (Feature - Dual-Line Album Progress Tracker):**
-  * Implemented dual-line progress reporting with live file counter, album progress, and batch completion indicators.
-* **v1.0.0 (New Engine - `gallery-dl` Integration):**
-  * Embedded official `gallery-dl` Python backend (`backends/gallerydl_backend.py`) with in-memory configuration isolation (`config.clear()`).
-  * Support for 300+ image hosting platforms, manga readers, and social galleries.
-
-#### 🎬 Version 0.x — Core Architecture & `yt-dlp` Engine
-* **v0.2.0 (Feature - Proof-of-Origin Token Sidecar):**
-  * Implemented `core/pot_manager.py` with automatic lifecycle management for local Proof-of-Origin token provider sidecar (`127.0.0.1:4416`), enabling 1080p/4K YouTube downloads without account verification.
-* **v0.1.6 (Bug Fix - Format Control & DASH/HLS High-Res Discovery):**
-  * Added `--format` / `-f` CLI option and configured `extractor_args` with `missing_pot` to discover complete stream formats.
-* **v0.1.5 (Bug Fix - JavaScript Challenge Solver):**
-  * Integrated `remote_components: ["ejs:github"]` into `YtDlpBackend` for modern YouTube player signature decoding.
-* **v0.1.4 (Feature - Browser Cookie Extraction):**
-  * Added `--cookies-from-browser <browser>` and `--cookies <file>` flags to bypass age gates and access subscriber-only media.
-* **v0.1.3 (Bug Fix / Polish):**
-  * Clean newline separation, suppressed stdout progress noise with `noprogress: True`, and optimized extractor matching.
-* **v0.1.2 (UX Polish):**
-  * Enabled direct URL downloads without needing explicit `download` subcommand.
-* **v0.1.1 (Bug Fix / Polish):**
-  * Fixed merged final filename reporting (`.mp4`), relative path display, and tag formatting.
-* **v0.1.0 (Feature):**
-  * Added structured folder sorting hierarchy (`downloads/<downloader>/<host>/`).
-* **v0.0.2 (Bug Fix):**
-  * Upgraded `yt-dlp` to fix plugin logger mismatch; resolved Windows console Unicode encoding.
-* **v0.0.1 (Baseline Architecture):**
-  * Initial architecture: unified models (`DownloadTask`, `QueueItem`, `ArchiveEntry`), isolated `ConfigManager`, SQLite archive database (`core/archive.py`), persistent queue (`core/queue_manager.py`), 3-tier URL router (`core/router.py`), and `yt-dlp` Python backend.
+* **v4.x.x (`cyberdrop-dl`)**: Subprocess engine integration for file lockers & forums, live SQLite progress tracking, directory hierarchy normalization, existing-file skip detection, and bidirectional failover.
+* **v3.x.x (`telegram-dl`)**: Native Telethon client for public/private Telegram channels & chats, interactive CLI authentication wizard (`multi-dl auth`), and engine auto-updater (`multi-dl -U`).
+* **v2.x.x (`terabox-dl`)**: Native TeraBox engine port with JS token scraping, dynamic direct links, multi-chunk threaded streaming, HTTP Range resume, and interactive TUI mode (`multi-dl -i`).
+* **v1.x.x (`gallery-dl`)**: Python library integration for 300+ image hosting platforms and galleries, in-memory config sandboxing, and dual-line batch progress tracker.
+* **v0.x.x (`yt-dlp` & Core Architecture)**: Foundation framework with unified data models, SQLite deduplication archive, priority queue, 3-tier URL router, and yt-dlp backend with automatic Proof-of-Origin (PO) token sidecar.
 
 ---
 
@@ -89,11 +20,11 @@
 
 | Engine | Primary Media & Domains | Integration Method | Key Features |
 | :--- | :--- | :--- | :--- |
-| **`yt-dlp`** | YouTube, Twitch, TikTok, Twitter/X, Reddit, Vimeo, SoundCloud, 1000+ streaming sites | Embedded Python API | PO Token sidecar, EJS challenge solver, browser cookies, custom formats (`-f`), auto ffmpeg |
-| **`gallery-dl`** | Image boards, manga, galleries, social media, common lockers (Imgur, Pixiv, Danbooru, Reddit, Bunkr, GoFile, Pixeldrain, Catbox, Coomer, Kemono, Erome) | Embedded Python Library | In-memory sandbox (`config.clear()`), batch counter, dual-line progress display |
-| **`terabox-dl`** | TeraBox cloud links (`terabox.com`, `1024tera.com`, `teraboxapp.com`, etc.) | Native Python Port | JS token scraper, direct link extractor, multi-threaded chunk streaming, HTTP `Range` resume, `ndus` cookie |
-| **`telegram-dl`** | Public/private Telegram channels, groups, direct chats (`t.me/...`) | Native Telethon Library | Interactive auth setup wizard (`multi-dl auth`), session persistence, media type filtering |
-| **`cyberdrop-dl`** | File lockers, forums, album hosts, dump sites (Cyberdrop, Bunkr, GoFile, Pixeldrain, forums, etc.) | Subprocess CLI Wrapper | Live SQLite progress bar & HTTP size probing, dynamic config sandbox, locker crawler |
+| [**`yt-dlp`**](https://github.com/yt-dlp/yt-dlp) | YouTube, Twitch, TikTok, Twitter/X, Reddit, Vimeo, SoundCloud, 1000+ streaming sites | Embedded Python API | PO Token sidecar, EJS challenge solver, browser cookies, custom formats (`-f`), auto ffmpeg |
+| [**`gallery-dl`**](https://github.com/mikf/gallery-dl) | Image boards, manga, galleries, social media, and file hosts (Imgur, Pixiv, Danbooru, Reddit, Twitter/X, Flickr, DeviantArt, etc.) | Embedded Python Library | In-memory sandbox (`config.clear()`), batch counter, dual-line progress display |
+| [**`terabox-dl`**](https://github.com/Alex-0099/Terabox-DL) | TeraBox cloud links (`terabox.com`, `1024tera.com`, `teraboxapp.com`, etc.) | Native Python Port | JS token scraper, direct link extractor, multi-threaded chunk streaming, HTTP `Range` resume, `ndus` cookie |
+| [**`telegram-dl`**](https://github.com/Alex-0099/Telegram-dl) | Public/private Telegram channels, groups, direct chats (`t.me/...`) | Native [Telethon](https://github.com/LonamiWebs/Telethon) Library | Interactive auth setup wizard (`multi-dl auth`), session persistence, media type filtering |
+| [**`cyberdrop-dl`**](https://github.com/Cyberdrop-DL/cyberdrop-dl) | File lockers, community forums, image hosts, album crawlers, and multi-host aggregators | Subprocess CLI Wrapper | Live SQLite progress bar & HTTP size probing, dynamic config sandbox, locker crawler |
 
 ---
 
@@ -113,9 +44,8 @@
                                     │
                 ┌───────────────────┴───────────────────┐
                 ▼                                       ▼
-    Common File Lockers                         Streaming / Specialized
-  (Bunkr, GoFile, Pixeldrain,                  (YouTube, TikTok, TeraBox,
-   Catbox, Coomer, Kemono...)                         Telegram...)
+     Common File Lockers                        Streaming / Cloud / Chats
+(Image hosts, albums, lockers...)               (YouTube, TeraBox, Telegram...)
                 │                                       │
                 ▼                                       ▼
     ┌───────────────────────┐               ┌───────────────────────┐
@@ -133,8 +63,8 @@
 ```
 
 1. **Tier 1 — Domain Matching:** Fast Regex map routes URLs to their optimal engine.
-2. **Tier 2 — Locker Prioritization:** Common file lockers default to `gallery-dl` to prevent skipped files and guarantee clean single-file placement.
-3. **Tier 3 — Bidirectional Automatic Failover:** If `gallery-dl` fails (e.g. forum thread or unsupported album type), the task seamlessly falls back to `cyberdrop-dl`. If `cyberdrop-dl` fails, it falls back to `gallery-dl`.
+2. **Tier 2 — Locker Prioritization:** Common file lockers default to `gallery-dl` for clean single-file downloads and reliable extraction.
+3. **Tier 3 — Bidirectional Automatic Failover:** If `gallery-dl` encounters an unsupported forum thread or structure variation, the task seamlessly falls back to `cyberdrop-dl`. If `cyberdrop-dl` fails, it falls back to `gallery-dl`.
 
 ---
 
@@ -143,8 +73,8 @@
 ### 1. Direct Downloads
 Simply pass the URL directly:
 ```powershell
-python multi-dl.py "https://www.youtube.com/watch?v=aqz-KE-bpKQ"
-python multi-dl.py "https://pixeldrain.com/u/kbAnWg3d"
+python multi-dl.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+python multi-dl.py "https://imgur.com/a/sample_album"
 python multi-dl.py "https://terabox.com/s/1abcdef..."
 python multi-dl.py "https://t.me/channel_name/123"
 ```
@@ -194,7 +124,7 @@ python multi-dl.py "https://www.youtube.com/watch?v=..." --cookies-from-browser 
 python multi-dl.py "https://www.youtube.com/watch?v=..." --cookies-from-browser firefox
 
 # Or pass a Netscape cookies.txt file:
-python multi-dl.py "https://..." --cookies "cookies.txt"
+python multi-dl.py "https://example.com/video" --cookies "cookies.txt"
 
 # Provide TeraBox session cookie:
 python multi-dl.py "https://terabox.com/s/..." --ndus "YOUR_NDUS_COOKIE"
@@ -216,7 +146,7 @@ python multi-dl.py archive --search "search_term"
 
 ### 9. Test URL Routing
 ```powershell
-python multi-dl.py route "https://bunkr.cr/f/mgUxSR79ZiNOD"
+python multi-dl.py route "https://imgur.com/a/sample_album"
 ```
 
 ### 10. Check Version
@@ -228,72 +158,69 @@ python multi-dl.py --version
 
 ---
 
-## ⚙️ Configuration Reference (`config.json`)
+## 🔧 Downloader Configuration Guide
 
-All engines and core systems are configured centrally via `config.json` without modifying global system configurations:
+Each engine runs inside an isolated sandbox, keeping its settings independent from your global operating system profiles.
 
-```json
-{
-    "version": "4.2.2",
-    "general": {
-        "download_dir": "downloads",
-        "concurrent_downloads": 3,
-        "organize_by_backend": true,
-        "organize_by_site": true,
-        "auto_detect_backend": true,
-        "retry_failed_attempts": 3
-    },
-    "archive": {
-        "enabled": true,
-        "db_path": "data/archive.db",
-        "dedup_by_url": true,
-        "dedup_by_hash": false
-    },
-    "yt_dlp": {
-        "format": "bestvideo*+bestaudio/best",
-        "merge_output_format": "mp4",
-        "embed_metadata": true,
-        "embed_thumbnail": false,
-        "write_subtitles": false,
-        "ffmpeg_location": null,
-        "cookies_from_browser": null,
-        "fallback_browser_cookies": "firefox",
-        "auto_start_po_provider": true,
-        "po_provider_host": "127.0.0.1",
-        "po_provider_port": 4416,
-        "extractor_args": {
-            "youtube": {
-                "formats": ["missing_pot"]
-            }
-        }
-    },
-    "gallery_dl": {
-        "config_file": "configs/gallery-dl.json"
-    },
-    "cyberdrop_dl": {
-        "max_simultaneous": 5,
-        "use_domain_subfolders": true,
-        "config_file": "configs/cyberdrop-dl.json",
-        "executable_path": "cyberdrop-dl"
-    },
-    "telegram_dl": {
-        "api_id": "",
-        "api_hash": "",
-        "session_name": "telegram_dl_session",
-        "media_types": ["photo", "video", "document"],
-        "min_file_size_mb": 0,
-        "max_file_size_mb": 0,
-        "organize_by_chat": true,
-        "organize_by_type": true
-    },
-    "terabox_dl": {
-        "ndus_cookie": "",
-        "chunk_size_mb": 4,
-        "max_threads": 4,
-        "auto_unpack": false
-    }
-}
-```
+### 1. Master Configuration (`config.json`)
+The primary configuration file at the project root connects all engines, sets download folders, and determines global options:
+* `"download_dir"`: Destination folder for all downloads (defaults to `"downloads"`).
+* `"organize_by_backend"`: Sorts files into subdirectories by engine (`downloads/<engine>/`).
+* `"organize_by_site"`: Sorts files into subdirectories by host domain (`downloads/<engine>/<site>/`).
+* `"concurrent_downloads"`: Number of concurrent worker threads.
+
+---
+
+### 2. `yt-dlp` Configuration (`configs/yt-dlp.conf`)
+* **How it works**: Uses standard `yt-dlp` command-line flags written line-by-line (e.g. `--format`, `--sub-langs`, `--embed-subs`). It is isolated using `ignoreconfig=True` to never conflict with `%APPDATA%/yt-dlp/config`.
+* **Example options**:
+  ```ini
+  --merge-output-format mp4
+  --embed-metadata
+  --sub-langs all
+  --concurrent-fragments 4
+  ```
+* 📖 **Documentation**: [yt-dlp Configuration Guide](https://github.com/yt-dlp/yt-dlp#configuration)
+
+---
+
+### 3. `gallery-dl` Configuration (`configs/gallery-dl.json`)
+* **How it works**: Uses JSON format to configure extractors, file naming patterns, postprocessors, and domain-specific options. Sandboxed in-memory via `config.clear()` before every run.
+* **Key fields**:
+  * `"extractor.<domain>"`: Custom options (e.g. image format, sleep intervals, tags) for specific websites.
+  * `"skip"`: Set to `true` to skip re-downloading files that already exist locally.
+  * `"cookies"`: Browser session cookie sources (e.g. `["firefox"]`, `["chrome"]`).
+* 📖 **Documentation**: [gallery-dl Configuration Reference](https://github.com/mikf/gallery-dl/blob/master/docs/configuration.rst) • [Sample gallery-dl.json](https://github.com/mikf/gallery-dl/blob/master/docs/gallery-dl.json)
+
+---
+
+### 4. `cyberdrop-dl` Configuration (`configs/cyberdrop-dl.json`)
+* **How it works**: Passed dynamically via `--config` to the isolated `cyberdrop-dl` subprocess runner.
+* **Key fields**:
+  * `"max_simultaneous"`: Number of concurrent file downloads (default: `5`).
+  * `"use_domain_subfolders"`: Organizes output by domain subfolders.
+  * `"include_domain_in_path"`: Eliminates redundant domain folder nesting.
+* 📖 **Documentation**: [cyberdrop-dl Wiki & Config Options](https://github.com/Cyberdrop-DL/cyberdrop-dl#configuration) • [Sample config.json](https://github.com/Cyberdrop-DL/cyberdrop-dl/blob/main/cyberdrop_dl/assets/config.json)
+
+---
+
+### 5. `telegram-dl` Configuration (`configs/telegram-dl.json`)
+* **How it works**: Stores Telegram API credentials, session name, and media filters.
+* **Setup**: Automatically generated and validated using the interactive wizard:
+  ```powershell
+  python multi-dl.py auth telegram
+  ```
+* 📖 **Documentation**: [Telethon Documentation](https://docs.telethon.dev/) • [Get Telegram API ID/Hash](https://my.telegram.org/)
+
+---
+
+### 6. `terabox-dl` Configuration (`configs/terabox-dl.json`)
+* **How it works**: Stores TeraBox session authentication and stream chunking parameters.
+* **Key fields**:
+  * `"ndus_cookie"`: TeraBox session cookie for high-speed direct downloads.
+  * `"chunk_size_mb"`: Download chunk segment size (default: `4` MB).
+  * `"max_threads"`: Number of parallel chunk workers (default: `4`).
+* **Setup**: Can be set interactively via `python multi-dl.py auth terabox` or directly in the file.
 
 ---
 
@@ -301,31 +228,30 @@ All engines and core systems are configured centrally via `config.json` without 
 
 ```
 MULTI_DOWNLOADER/
-├── backends/
-│   ├── base.py                   # Base backend abstract interface
-│   ├── cyberdrop_backend.py      # cyberdrop-dl subprocess runner & live SQLite hook
-│   ├── gallerydl_backend.py      # gallery-dl Python library integration
-│   ├── telegram_backend.py       # Telethon client & channel/chat scraper
-│   ├── terabox_backend.py        # TeraBox token scraper & chunk downloader
-│   └── ytdlp_backend.py          # yt-dlp Python API adapter
-├── core/
-│   ├── archive.py                # Unified SQLite deduplication database
-│   ├── config.py                 # Isolated configuration manager
-│   ├── exceptions.py             # Domain-specific error hierarchies
-│   ├── models.py                 # Dataclasses (DownloadTask, ArchiveEntry, etc.)
-│   ├── pot_manager.py            # YouTube PO Token server sidecar manager
-│   ├── queue_manager.py          # Persistent task queue
-│   ├── router.py                 # 3-tier URL router & failover coordinator
-│   ├── terminal.py               # Styled ANSI terminal output & progress bars
-│   └── updater.py                # Multi-engine pip & git updater
-├── configs/                      # Sandboxed backend configuration files
-├── data/                         # SQLite archive and queue files
-├── downloads/                    # Output root: downloads/<backend>/<site>/<file>
-├── tests/                        # Comprehensive test suite (58 tests)
-├── multi-dl.py                   # Main CLI entry point
-├── config.json                   # Master configuration
-└── requirements.txt              # Python dependencies
+├── backends/         # Engine adapters (yt-dlp, gallery-dl, terabox-dl, telegram-dl, cyberdrop-dl)
+├── core/             # Core logic (URL router, archive database, queue, config, updater, terminal UI)
+├── configs/          # Dedicated sandbox configuration files for each engine
+├── data/             # Persistent SQLite archive (archive.db) and runtime cache
+├── downloads/        # Output root: downloads/<engine>/<site>/<file>
+├── tests/            # Automated test suite (58 unit & integration tests)
+├── config.json       # Master configuration file
+├── multi-dl.py       # Main CLI & interactive entry point
+└── requirements.txt  # Python environment dependencies
 ```
+
+---
+
+## 📦 Upstream Projects & Credits
+
+This tool orchestrates and relies on the following open-source projects:
+
+* [**yt-dlp**](https://github.com/yt-dlp/yt-dlp) — Feature-rich audio and video downloader for YouTube and thousands of streaming sites.
+* [**gallery-dl**](https://github.com/mikf/gallery-dl) — Image and album scraper for image boards, galleries, and archives ([Codeberg Mirror](https://codeberg.org/mikf/gallery-dl)).
+* [**cyberdrop-dl**](https://github.com/Cyberdrop-DL/cyberdrop-dl) — Bulk file and forum scraper for lockers, forums, and multi-host aggregators.
+* [**Telegram-dl**](https://github.com/Alex-0099/Telegram-dl) & [**Telethon**](https://github.com/LonamiWebs/Telethon) — Fast, asynchronous MTProto Python client for Telegram media downloads.
+* [**Terabox-DL**](https://github.com/Alex-0099/Terabox-DL) — Direct link extractor and multi-threaded chunk downloader for TeraBox.
+* [**FFmpeg**](https://ffmpeg.org/) — Cross-platform multimedia framework for stream muxing, remuxing, and post-processing.
+* [**curl_cffi**](https://github.com/yifeikong/curl_cffi) — Python binding for `curl-impersonate` enabling browser TLS fingerprint emulation.
 
 ---
 
