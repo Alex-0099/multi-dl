@@ -214,8 +214,9 @@ def test_multibar_manager_two_line_card_format(capsys):
     assert "[yt-dlp]" in out
     assert "Big Buck Bunny 1080p" in out
 
-    # Slot 3 (idle): [Downloader]: [idle] • idle
-    assert "[idle]" in out
+    # Slot 3 is idle with no active task, so it is cleanly hidden from TUI
+    assert "[idle]" not in out
+    assert "(2/3 Workers)" in out
 
 
 def test_router_create_default_passes_config():
@@ -297,6 +298,87 @@ def test_multibar_manager_wide_title_rendering(capsys):
     assert "[Downloader]:" in out
     assert "[yt-dlp]" in out
     assert "Pumping Strategies" in out
+
+
+def test_print_batch_summary_alignment(capsys):
+    """Verifies that all rows in single and batch summary cards have equal visible width."""
+    import re
+    from core.terminal import print_batch_summary, str_width
+
+    # 1. Single download summary
+    print_batch_summary(
+        total_items=1,
+        succeeded_count=1,
+        skipped_count=0,
+        failed_count=0,
+        total_bytes=35776102,
+        elapsed_seconds=790.0,
+        saved_path=r"~downloads\gallery-dl\nhentai\455929 [Koutetsu Shabon Dama...]",
+    )
+    out = capsys.readouterr().out
+    clean_lines = [re.sub(r'\033\[[0-9;]*[a-zA-Z]', '', line).strip() for line in out.splitlines()]
+    lines = [line for line in clean_lines if line.startswith("║")]
+    assert len(lines) >= 4
+    # All box content lines must have identical visible width
+    widths = [str_width(line) for line in lines]
+    assert len(set(widths)) == 1, f"Mismatch in single summary line widths: {widths}"
+    assert "• Status:" in out
+    assert "• Saved To:" in out
+    assert "• Transferred:" in out
+    assert "• Elapsed Time:" in out
+
+    # 2. Batch download summary
+    print_batch_summary(
+        total_items=3,
+        succeeded_count=3,
+        skipped_count=0,
+        failed_count=0,
+        total_bytes=104857600,
+        elapsed_seconds=45.0,
+    )
+    out_batch = capsys.readouterr().out
+    b_clean = [re.sub(r'\033\[[0-9;]*[a-zA-Z]', '', line).strip() for line in out_batch.splitlines()]
+    b_lines = [line for line in b_clean if line.startswith("║")]
+    assert len(b_lines) >= 4
+    b_widths = [str_width(line) for line in b_lines]
+    assert len(set(b_widths)) == 1, f"Mismatch in batch summary line widths: {b_widths}"
+
+
+def test_dynamic_slot_hiding_when_free(capsys):
+    """Verifies that idle slots disappear from the TUI when downloads complete with no pending links."""
+    from core.terminal import MultiBarManager
+
+    mb = MultiBarManager(max_slots=3, is_tty=True)
+    mb.assign_slot("task-1", "gallery-dl", "Gallery Album 1")
+    mb.assign_slot("task-2", "gallery-dl", "Gallery Album 2")
+    mb.assign_slot("task-3", "gallery-dl", "Gallery Album 3")
+
+    mb.render(force=True)
+    out1 = capsys.readouterr().out
+    assert "Gallery Album 1" in out1
+    assert "Gallery Album 2" in out1
+    assert "Gallery Album 3" in out1
+    assert "(3/3 Workers)" in out1
+
+    # Finish slot 1 and slot 2
+    mb.finish_slot(1, "saved/album1")
+    mb.finish_slot(2, "saved/album2")
+    _ = capsys.readouterr()
+    mb.set_queue_counts(remaining=1, completed=2, failed=0)
+
+    mb.render(force=True)
+    out2 = capsys.readouterr().out
+    # Idle slots should disappear completely!
+    assert "Gallery Album 1" not in out2
+    assert "Gallery Album 2" not in out2
+    assert "[idle]" not in out2
+    # Only active slot 3 should be rendered
+    assert "Gallery Album 3" in out2
+    assert "(1/3 Workers)" in out2
+    assert "1 remaining" in out2
+    assert "2 completed" in out2
+
+
 
 
 

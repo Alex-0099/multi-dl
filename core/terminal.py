@@ -44,6 +44,13 @@ def safe_terminal_write(text: str) -> None:
 
 def char_width(ch: str) -> int:
     """Returns terminal column width (2 for wide/fullwidth CJK and emojis, 1 otherwise)."""
+    if ch in "🖼📥📦🎬📁🚀⚠️❌✅⏩":
+        return 2
+    if ch == "•":
+        return 1
+    code = ord(ch)
+    if code > 0x1F000:
+        return 2
     w = unicodedata.east_asian_width(ch)
     return 2 if w in ("W", "F") else 1
 
@@ -338,11 +345,14 @@ class MultiBarManager:
             self._remaining = max(0, remaining)
             self._completed = max(0, completed)
             self._failed = max(0, failed)
-        self.render()
+            has_active = any(s.status == "active" for s in self._slots.values())
+        if has_active:
+            self.render()
 
     def assign_slot(self, item_id: str, backend: str, url_or_title: str) -> int:
         """Assigns an idle slot for a new concurrent worker. Returns 1-based slot_id."""
         with self._lock:
+            assigned_id = 1
             for slot_id, slot in self._slots.items():
                 if slot.status in ("idle", "completed", "failed", "skipped"):
                     slot.item_id = item_id
@@ -355,16 +365,19 @@ class MultiBarManager:
                     slot.file_index = None
                     slot.total_files = None
                     slot.status = "active"
-                    slot.status_message = None
-                    return slot_id
-            # Fallback to slot 1 if all occupied
-            s = self._slots[1]
-            s.item_id = item_id
-            s.backend = backend
-            s.url_or_title = url_or_title
-            s.status = "active"
-            s.status_message = None
-            return 1
+                    slot.status_message = "Connecting..."
+                    assigned_id = slot_id
+                    break
+            else:
+                s = self._slots[1]
+                s.item_id = item_id
+                s.backend = backend
+                s.url_or_title = url_or_title
+                s.status = "active"
+                s.status_message = "Connecting..."
+                assigned_id = 1
+        self.render(force=True)
+        return assigned_id
 
     def update_slot(
         self,
@@ -441,7 +454,20 @@ class MultiBarManager:
         sep = f" {bullet} "
 
         with self._lock:
-            active_count = sum(1 for s in self._slots.values() if s.status == "active")
+            active_slots = [s for s in self._slots.values() if s.status == "active"]
+            active_count = len(active_slots)
+
+            # When downloads complete, free slots with no links to process disappear
+            # from the Terminal, keeping the display clean with only current work.
+            if active_slots:
+                slots_to_print = active_slots
+            elif self._remaining > 0:
+                slots_to_print = [self._slots[1]]
+            else:
+                slots_to_print = []
+
+            if not slots_to_print and self._lines_printed == 0:
+                return
 
             # 1. Header Card (matching visual theme)
             if self.max_slots == 1:
@@ -460,11 +486,10 @@ class MultiBarManager:
             lines_to_print = [header_str, ""]
 
             # Decide whether to include inter-slot spacing based on available terminal rows
-            include_slot_spacing = term_height >= (self.max_slots * 3 + 4)
+            include_slot_spacing = term_height >= (len(slots_to_print) * 3 + 4)
 
             # 2. Worker Slots (2 lines per slot per Drawing-1.sketchpad.png)
-            for slot_id in range(1, self.max_slots + 1):
-                slot = self._slots[slot_id]
+            for idx, slot in enumerate(slots_to_print):
                 eng_name = slot.backend if slot.status == "active" else "idle"
                 eng_badge = Style.engine_badge(eng_name)
 
@@ -548,7 +573,7 @@ class MultiBarManager:
                 lines_to_print.append(line1)
                 lines_to_print.append(line2)
 
-                if include_slot_spacing and slot_id < self.max_slots:
+                if include_slot_spacing and idx < len(slots_to_print) - 1:
                     lines_to_print.append("")
 
             # 3. Spacing & Footer Line
@@ -575,6 +600,14 @@ class MultiBarManager:
             for line in lines_to_print:
                 safe_terminal_write(f"\r\033[K{line}\n")
                 printed_count += 1
+
+            # If canvas shrank, clear any extra trailing lines from the previous frame
+            if self._lines_printed > printed_count:
+                extra_lines = self._lines_printed - printed_count
+                for _ in range(extra_lines):
+                    safe_terminal_write("\r\033[K\n")
+                safe_terminal_write(f"\033[{extra_lines}A")
+
             try:
                 sys.stdout.flush()
             except Exception:
@@ -605,8 +638,9 @@ def print_batch_summary(
     total_bytes: int,
     elapsed_seconds: float,
     failed_items: Optional[List[Tuple[str, str]]] = None,
+    saved_path: Optional[str] = None,
 ) -> None:
-    """Renders a polished, high-visibility summary card after completing a download batch."""
+    """Renders a polished, high-visibility summary card after completing downloads (single or batch)."""
     term_width = shutil.get_terminal_size((80, 24)).columns
     box_width = min(66, max(52, term_width - 4))
 
@@ -621,35 +655,53 @@ def print_batch_summary(
     else:
         speed_str = ""
 
-    def _box_line(left_text: str, right_text: str = "") -> str:
-        clean_left = re.sub(r'\033\[[0-9;]*[a-zA-Z]', '', left_text)
-        clean_right = re.sub(r'\033\[[0-9;]*[a-zA-Z]', '', right_text)
-        extra_left = sum(1 for ch in clean_left if ord(ch) > 0x1F000 or ch in "🖼📥📦🎬📁🚀⚠️❌✅⏩•")
-        extra_right = sum(1 for ch in clean_right if ord(ch) > 0x1F000 or ch in "🖼📥📦🎬📁🚀⚠️❌✅⏩•")
-        vis_total = len(clean_left) + extra_left + len(clean_right) + extra_right
-        pad = max(0, box_width - 4 - vis_total)
-        return f"{Style.CYAN}║ {left_text}{' ' * pad}{right_text} ║{Style.RESET}"
+    def _box_line(label: str, value: str = "") -> str:
+        col1_w = 21
+        label_vis = str_width(label)
+        label_pad = max(1, col1_w - label_vis)
+        actual_label_w = label_vis + label_pad
+        max_val_w = max(10, box_width - 4 - actual_label_w)
+        if str_width(value) > max_val_w:
+            value = truncate_to_width(value, max_val_w)
+        val_vis = str_width(value)
+        rem_pad = max(0, box_width - 4 - actual_label_w - val_vis)
+        return f"{Style.CYAN}║ {label}{' ' * label_pad}{value}{' ' * rem_pad} ║{Style.RESET}"
 
     bar = "═" * (box_width - 2)
     div = "─" * (box_width - 2)
 
-    print(f"\n{Style.CYAN}╔{bar}╗{Style.RESET}")
-    title_text = f"{Style.BOLD}{Style.WHITE}BATCH DOWNLOAD SUMMARY{Style.RESET}"
+    title_text = f"{Style.BOLD}{Style.WHITE}DOWNLOAD SUMMARY{Style.RESET}" if total_items == 1 else f"{Style.BOLD}{Style.WHITE}BATCH DOWNLOAD SUMMARY{Style.RESET}"
     clean_title = re.sub(r'\033\[[0-9;]*[a-zA-Z]', '', title_text)
     pad_title = max(0, box_width - 2 - len(clean_title))
     pl = pad_title // 2
     pr = pad_title - pl
+
+    print(f"\n{Style.CYAN}╔{bar}╗{Style.RESET}")
     print(f"{Style.CYAN}║{' ' * pl}{title_text}{' ' * pr}║{Style.RESET}")
     print(f"{Style.CYAN}╠{div}╣{Style.RESET}")
 
-    print(_box_line(f"• Total Processed:", f"{Style.BOLD}{Style.WHITE}{total_items}{Style.RESET}"))
-    print(_box_line(f"• Succeeded:", f"{Style.BOLD}{Style.GREEN}{succeeded_count} completed{Style.RESET}"))
-    if skipped_count > 0:
-        print(_box_line(f"• Skipped:", f"{Style.BOLD}{Style.YELLOW}{skipped_count} (already on disk){Style.RESET}"))
-    if failed_count > 0:
-        print(_box_line(f"• Failed / Errors:", f"{Style.BOLD}{Style.RED}{failed_count}{Style.RESET}"))
-    print(_box_line(f"• Total Transferred:", f"{Style.BOLD}{Style.CYAN}{format_bytes(total_bytes)}{Style.RESET}"))
-    print(_box_line(f"• Elapsed Time:", f"{Style.BOLD}{Style.WHITE}{time_str}{Style.dim(speed_str)}{Style.RESET}"))
+    if total_items == 1:
+        if succeeded_count > 0:
+            status_val = f"{Style.BOLD}{Style.GREEN}✅ Completed{Style.RESET}"
+        elif skipped_count > 0:
+            status_val = f"{Style.BOLD}{Style.YELLOW}⏩ Skipped (already on disk){Style.RESET}"
+        else:
+            status_val = f"{Style.BOLD}{Style.RED}❌ Failed{Style.RESET}"
+        print(_box_line("• Status:", status_val))
+        if saved_path:
+            print(_box_line("• Saved To:", f"{Style.BOLD}{Style.WHITE}{saved_path}{Style.RESET}"))
+        print(_box_line("• Transferred:", f"{Style.BOLD}{Style.CYAN}{format_bytes(total_bytes)}{Style.RESET}"))
+        print(_box_line("• Elapsed Time:", f"{Style.BOLD}{Style.WHITE}{time_str}{Style.dim(speed_str)}{Style.RESET}"))
+    else:
+        print(_box_line("• Total Processed:", f"{Style.BOLD}{Style.WHITE}{total_items}{Style.RESET}"))
+        print(_box_line("• Succeeded:", f"{Style.BOLD}{Style.GREEN}{succeeded_count} completed{Style.RESET}"))
+        if skipped_count > 0:
+            print(_box_line("• Skipped:", f"{Style.BOLD}{Style.YELLOW}{skipped_count} (already on disk){Style.RESET}"))
+        if failed_count > 0:
+            print(_box_line("• Failed / Errors:", f"{Style.BOLD}{Style.RED}{failed_count}{Style.RESET}"))
+        print(_box_line("• Total Transferred:", f"{Style.BOLD}{Style.CYAN}{format_bytes(total_bytes)}{Style.RESET}"))
+        print(_box_line("• Elapsed Time:", f"{Style.BOLD}{Style.WHITE}{time_str}{Style.dim(speed_str)}{Style.RESET}"))
+
     print(f"{Style.CYAN}╚{bar}╝{Style.RESET}\n")
 
     if failed_items:

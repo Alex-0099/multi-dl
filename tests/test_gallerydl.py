@@ -153,6 +153,35 @@ def test_gallerydl_concurrent_thread_safety():
     assert len(errors) == 0, f"Thread safety errors encountered: {errors}"
 
 
+def test_gallerydl_warning_routed_to_verbose_tag():
+    """Verifies that network/urllib warnings are captured by _GalleryDlLogHandler and routed to tracker without printing to stdout."""
+    import logging
+    from backends.gallerydl_backend import _GalleryDlBatchTracker, _GalleryDlLogHandler, _active_trackers
+    from core.models import DownloadProgress
+
+    captured_progress = []
+
+    def cb(prog: DownloadProgress):
+        captured_progress.append(prog)
+
+    tracker = _GalleryDlBatchTracker(progress_callback=cb)
+    _active_trackers.current = tracker
+
+    handler = _GalleryDlLogHandler()
+    logger = logging.getLogger("test_logger")
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+
+    try:
+        logger.warning("[downloader.http][warning] Connection reset by peer, retrying in 5.0s")
+        assert len(captured_progress) == 1
+        assert "WARNING: Connection reset" in captured_progress[0].status_message
+    finally:
+        logger.removeHandler(handler)
+        _active_trackers.current = None
+
+
+
 
 
 

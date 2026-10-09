@@ -93,7 +93,7 @@ class QueueDispatcher:
             if all_skipped:
                 self.queue_manager.mark_status(item.id, TaskStatus.SKIPPED)
                 multi_bar.finish_slot(slot_id, clean_display_path, status_type="skipped")
-                return True, True, 0, None
+                return True, True, 0, None, clean_display_path
 
             self.queue_manager.mark_status(item.id, TaskStatus.COMPLETED)
             multi_bar.finish_slot(slot_id, clean_display_path, status_type="completed")
@@ -110,17 +110,21 @@ class QueueDispatcher:
             file_size = entry.file_size or 0
             if not file_size and Path(entry.file_path).exists():
                 try:
-                    file_size = Path(entry.file_path).stat().st_size
+                    p = Path(entry.file_path)
+                    if p.is_file():
+                        file_size = p.stat().st_size
+                    elif p.is_dir():
+                        file_size = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
                 except Exception:
                     file_size = 0
 
-            return True, False, file_size, None
+            return True, False, file_size, None, clean_display_path
 
         except Exception as e:
             err_msg = str(e)
             self.queue_manager.mark_status(item.id, TaskStatus.FAILED, error=err_msg)
             multi_bar.finish_slot(slot_id, item.url, status_type="failed", error_msg=err_msg)
-            return False, False, 0, err_msg
+            return False, False, 0, err_msg, None
 
     async def run(
         self,
@@ -171,6 +175,7 @@ class QueueDispatcher:
         total_bytes = 0
         total_processed = 0
         failed_items: List[Tuple[str, str]] = []
+        saved_paths: List[str] = []
 
         active_engine_counts: Dict[str, int] = Counter()
         active_tasks: Set[asyncio.Task] = set()
@@ -195,8 +200,8 @@ class QueueDispatcher:
 
                 async def _task_wrapper(q_item=item, sid=slot_id, eng=engine_name):
                     try:
-                        ok, was_sk, sz, er = await self._execute_item(q_item, sid, multi_bar)
-                        return ok, was_sk, sz, er, q_item.url
+                        ok, was_sk, sz, er, saved_p = await self._execute_item(q_item, sid, multi_bar)
+                        return ok, was_sk, sz, er, q_item.url, saved_p
                     finally:
                         active_engine_counts[eng] = max(0, active_engine_counts.get(eng, 1) - 1)
 
@@ -213,13 +218,15 @@ class QueueDispatcher:
             for finished_task in done:
                 total_processed += 1
                 try:
-                    ok, was_skip, b_size, err, item_url = finished_task.result()
+                    ok, was_skip, b_size, err, item_url, saved_p = finished_task.result()
                     if ok:
                         if was_skip:
                             skipped += 1
                         else:
                             succeeded += 1
                             total_bytes += b_size
+                        if saved_p:
+                            saved_paths.append(saved_p)
                     else:
                         failed += 1
                         if err:
@@ -249,16 +256,17 @@ class QueueDispatcher:
             failed_items=[{"url": u, "error": e} for u, e in failed_items],
         )
 
-        # Print post-batch summary card if multiple items were processed
-        if total_processed > 1:
-            print_batch_summary(
-                total_items=total_processed,
-                succeeded_count=succeeded,
-                skipped_count=skipped,
-                failed_count=failed,
-                total_bytes=total_bytes,
-                elapsed_seconds=elapsed_time,
-                failed_items=failed_items,
-            )
+        # Print post-download summary report (single or batch)
+        last_saved = saved_paths[0] if saved_paths else None
+        print_batch_summary(
+            total_items=total_processed,
+            succeeded_count=succeeded,
+            skipped_count=skipped,
+            failed_count=failed,
+            total_bytes=total_bytes,
+            elapsed_seconds=elapsed_time,
+            failed_items=failed_items,
+            saved_path=last_saved,
+        )
 
         return report

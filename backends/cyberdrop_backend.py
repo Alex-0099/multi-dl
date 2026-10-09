@@ -129,20 +129,32 @@ def _query_cdl_db_size(filename: Optional[str] = None, url: Optional[str] = None
                 if row and row[0] and row[1]:
                     return int(row[1]), int(row[0])
 
-            # 2. Look up by downloaded filename, original filename, or CDN url_path
+            # 2. Look up by downloaded filename, trace album_id, and aggregate full album
             if filename:
                 cur.execute(
                     """
-                    SELECT file_size FROM media 
+                    SELECT album_id, file_size FROM media 
                     WHERE (download_filename LIKE ? OR original_filename LIKE ? OR url_path LIKE ?) 
-                      AND file_size > 0 
                     ORDER BY rowid DESC LIMIT 1
                     """,
                     (f"%{filename}%", f"%{filename}%", f"%{filename}%")
                 )
                 row = cur.fetchone()
-                if row and row[0]:
-                    return int(row[0]), 1
+                if row:
+                    found_album = row[0]
+                    if found_album:
+                        cur.execute(
+                            """
+                            SELECT COUNT(*), SUM(file_size) FROM media 
+                            WHERE album_id = ? AND file_size > 0
+                            """,
+                            (found_album,)
+                        )
+                        alb_row = cur.fetchone()
+                        if alb_row and alb_row[0] and alb_row[1]:
+                            return int(alb_row[1]), int(alb_row[0])
+                    if row[1]:
+                        return int(row[1]), 1
 
     except Exception:
         pass
@@ -224,6 +236,24 @@ class CyberdropDlBackend(BaseBackend):
 
         # 4. Direct Python fallback
         return [sys.executable, "-c", "import sys, cyberdrop_dl.main; sys.exit(cyberdrop_dl.main.main())"]
+
+    def is_installed(self) -> bool:
+        """Checks whether cyberdrop-dl binary or python module is available on this system."""
+        custom = self.config.get("executable_path")
+        if custom and Path(custom).exists():
+            return True
+        if shutil.which("cyberdrop-dl") or shutil.which("cyberdrop-dl.exe"):
+            return True
+        user_local = Path.home() / ".local" / "bin"
+        for candidate in [user_local / "cyberdrop-dl.exe", user_local / "cyberdrop-dl"]:
+            if candidate.exists():
+                return True
+        scripts_dir = Path(sys.executable).parent
+        for candidate in [scripts_dir / "cyberdrop-dl.exe", scripts_dir / "Scripts" / "cyberdrop-dl.exe"]:
+            if candidate.exists():
+                return True
+        import importlib.util
+        return importlib.util.find_spec("cyberdrop_dl") is not None
 
     def can_handle(self, url: str) -> bool:
         """Returns True if the URL targets any supported domain or forum thread."""
@@ -333,6 +363,32 @@ class CyberdropDlBackend(BaseBackend):
         out_dir = Path(task.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        if not self.is_installed():
+            # Check if gallery-dl can handle it as an automatic failover
+            if self.config.get("enable_failover_to_gallerydl", True):
+                from backends.gallerydl_backend import GalleryDlBackend
+                from core.router import URLRouter
+                gdl = GalleryDlBackend()
+                if gdl.can_handle(task.url):
+                    host_id = URLRouter.get_host_identifier(task.url, self.name)
+                    failover_dir = str(out_dir.parent) if out_dir.name.lower() == host_id.lower() else str(out_dir)
+                    failover_task = DownloadTask(
+                        url=task.url,
+                        backend="gallery-dl",
+                        output_dir=failover_dir,
+                        options=task.options,
+                    )
+                    return await gdl.download(failover_task, progress_callback=progress_callback)
+
+            raise EngineNotFoundError(
+                "cyberdrop-dl is not installed on this system.\n"
+                "To install it into your virtual environment, run:\n"
+                "  .\\.venv\\Scripts\\pip install cyberdrop-dl\n"
+                "Or as an isolated tool:\n"
+                "  uv tool install cyberdrop-dl\n"
+                "  pipx install cyberdrop-dl"
+            )
+
         exe_cmd = self._resolve_executable()
         cmd = list(exe_cmd) + [
             "download",
@@ -435,13 +491,14 @@ class CyberdropDlBackend(BaseBackend):
                         active_name = clean_name
                         if clean_name != progress_active["last_file"]:
                             progress_active["last_file"] = clean_name
-                            if not progress_active.get("total_bytes"):
-                                b, count = _query_cdl_db_size(clean_name, task.url)
-                                if b:
-                                    progress_active["total_bytes"] = b
-                                    progress_active["total_files"] = count
+                            b, count = _query_cdl_db_size(clean_name, task.url)
+                            if b and count and count > 1:
+                                progress_active["total_bytes"] = b
+                                progress_active["total_files"] = count
+                            elif b and not progress_active.get("total_bytes"):
+                                progress_active["total_bytes"] = b
+                                progress_active["total_files"] = count
 
-                        # Continuously retry if total size is not yet resolved
                         if progress_active.get("total_bytes") is None:
                             b, count = _query_cdl_db_size(clean_name, task.url)
                             if b:
@@ -464,6 +521,26 @@ class CyberdropDlBackend(BaseBackend):
                         total_b = progress_active.get("total_bytes")
                         total_cnt = progress_active.get("total_files")
                         current_file_index = len(completed_files) + (1 if part_files else 0)
+
+                        # If downloaded more than total_b or total_cnt, refresh from database
+                        if (
+                            (total_cnt and current_file_index > total_cnt)
+                            or (total_b and cur_bytes > total_b)
+                        ):
+                            b_rf, count_rf = _query_cdl_db_size(active_name, task.url)
+                            if count_rf and count_rf >= current_file_index:
+                                total_cnt = count_rf
+                                progress_active["total_files"] = count_rf
+                            else:
+                                total_cnt = max(total_cnt or 0, current_file_index)
+                                progress_active["total_files"] = total_cnt
+
+                            if b_rf and b_rf >= cur_bytes:
+                                total_b = b_rf
+                                progress_active["total_bytes"] = b_rf
+                            else:
+                                total_b = max(total_b or 0, cur_bytes)
+                                progress_active["total_bytes"] = total_b
 
                         pct = None
                         eta = None

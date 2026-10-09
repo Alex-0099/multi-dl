@@ -37,7 +37,9 @@
         "config_file": "configs/yt-dlp.conf"
     },
     "gallery_dl": {
-        "config_file": "configs/gallery-dl.json"
+        "config_file": "configs/gallery-dl.json",
+        "cookies_from_browser": null,
+        "fallback_browser_cookies": "firefox"
     },
     "cyberdrop_dl": {
         "max_simultaneous": 5,

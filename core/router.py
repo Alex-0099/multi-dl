@@ -69,13 +69,17 @@ class URLRouter:
         "erome.com": "gallery-dl",
         "fapello.com": "gallery-dl",
         "cyberdrop.me": "gallery-dl",
+        # Forums & Community Boards (gallery-dl has native extractors for XenForo, vBulletin, phpBB)
+        "socialmediagirls.com": "gallery-dl",
+        "forums.socialmediagirls.com": "gallery-dl",
         "simpcity.su": "gallery-dl",
         "simpcity.to": "gallery-dl",
+        "simpcity.is": "gallery-dl",
+        "vipergirls.to": "gallery-dl",
 
         # cyberdrop-dl (Primary for deep forum threads and hosts without gallery-dl support)
         "saint.to": "cyberdrop-dl",
         "f95zone.to": "cyberdrop-dl",
-        "vipergirls.to": "cyberdrop-dl",
         "mega.nz": "cyberdrop-dl",
         "sendvid.com": "cyberdrop-dl",
         "streamtape.com": "cyberdrop-dl",
@@ -117,7 +121,7 @@ class URLRouter:
         Identify and return the proper backend instance for the provided URL.
         """
         # Manual user override
-        if backend_override:
+        if backend_override and backend_override != "auto":
             clean_name = backend_override.lower().replace("_", "-")
             if clean_name in self.backends:
                 return self.backends[clean_name]
@@ -150,13 +154,14 @@ class URLRouter:
     def detect_backend_name(cls, url: str, backend_override: Optional[str] = None) -> str:
         """
         Lightweight, fast detection of backend engine name without instantiating heavy backends.
-        Uses Tier 1 DOMAIN_MAP and fast substring patterns.
+        Uses Tier 1 DOMAIN_MAP, fast regex checks, and domain heuristics.
         """
-        if backend_override:
+        if backend_override and backend_override != "auto":
             return backend_override.lower().replace("_", "-")
 
         parsed = urlparse(url)
         domain = (parsed.netloc or "").lower().split(":")[0]
+        url_lower = url.lower()
 
         # Tier 1 direct match
         if domain in cls.DOMAIN_MAP:
@@ -174,6 +179,37 @@ class URLRouter:
         # TeraBox mirror detection
         if any(t in domain for t in ("terabox", "1024tera", "teraboxlink", "freeterabox", "mirrobox", "nephobox", "4funbox")):
             return "terabox-dl"
+
+        # Direct video files (.mp4, .mkv, .webm, .mov, etc.) route to yt-dlp
+        path_lower = parsed.path.lower()
+        if any(path_lower.endswith(v_ext) for v_ext in (".mp4", ".mkv", ".webm", ".m4v", ".mov", ".mp3", ".m4a", ".flv")):
+            return "yt-dlp"
+
+        # Forum indicators (XenForo / vBulletin / phpBB forum threads and posts)
+        if (
+            "/threads/" in url_lower
+            or "/posts/" in url_lower
+            or "/post-" in url_lower
+            or any(f in domain for f in ("forum.", "forums.", "board.", "community."))
+        ):
+            try:
+                import gallery_dl.extractor
+                if gallery_dl.extractor.find(url):
+                    return "gallery-dl"
+            except Exception:
+                pass
+            return "gallery-dl"
+
+        # Fast query of gallery-dl registered extractors (instantaneous in-memory regex match)
+        try:
+            import gallery_dl.extractor
+            g_ext = gallery_dl.extractor.find(url)
+            if g_ext and g_ext.__class__.__name__ != "DirectlinkExtractor":
+                return "gallery-dl"
+            elif g_ext and any(path_lower.endswith(i_ext) for i_ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")):
+                return "gallery-dl"
+        except Exception:
+            pass
 
         # Image/gallery heuristic vs video/audio
         if any(img in domain for img in ("image", "photo", "pic", "gallery", "album", "danbooru", "gelbooru")):

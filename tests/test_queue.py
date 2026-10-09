@@ -391,3 +391,71 @@ async def test_three_links_concurrent_slot_allocation(tmp_path):
     assert report.failed_count == 0
     assert qm.count_remaining() == 0
 
+
+def test_forum_routing_to_gallery_dl():
+    """Verifies forum threads (XenForo / vBulletin) route to gallery-dl, not yt-dlp."""
+    from core.router import URLRouter
+
+    forum_urls = [
+        "https://forums.socialmediagirls.com/threads/jhennifer_rodriguess_.363022/post-5394644",
+        "https://socialmediagirls.com/threads/model-name.12345/",
+        "https://simpcity.su/threads/thread-name.999/",
+        "https://simpcity.to/threads/thread-name.888/",
+        "https://vipergirls.to/threads/12345",
+        "https://randomforum.com/threads/photo-pack.555/",
+    ]
+    for url in forum_urls:
+        backend = URLRouter.detect_backend_name(url)
+        assert backend == "gallery-dl", f"Expected gallery-dl for {url}, got {backend}"
+
+
+@pytest.mark.asyncio
+async def test_single_download_summary_printed(tmp_path, capsys):
+    """Verifies that single downloads display a completion summary card with the saved path."""
+    from core.archive import ArchiveManager
+    from core.config import ConfigManager
+    from core.dispatcher import QueueDispatcher
+    from core.models import ArchiveEntry, DownloadTask
+
+    queue_file = tmp_path / "single_summary_queue.json"
+    qm = QueueManager(queue_file)
+    qm.add("https://nhentai.net/g/533286/")
+
+    mock_gdl = MagicMock()
+    mock_gdl.name = "gallery-dl"
+    mock_gdl.can_handle.return_value = True
+
+    saved_file = tmp_path / "downloads" / "gallery-dl" / "nhentai" / "533286" / "001.jpg"
+    saved_file.parent.mkdir(parents=True, exist_ok=True)
+    saved_file.write_text("test")
+
+    async def mock_dl(task: DownloadTask, progress_callback=None):
+        return ArchiveEntry(
+            id="test-id",
+            url=task.url,
+            file_path=str(saved_file),
+            file_name=saved_file.name,
+            file_hash=None,
+            file_size=1024,
+            backend="gallery-dl",
+            source_site="nhentai",
+        )
+
+    mock_gdl.download = AsyncMock(side_effect=mock_dl)
+    router = URLRouter({"gallery-dl": mock_gdl})
+
+    cfg = ConfigManager()
+    cfg.set("general", "download_dir", str(tmp_path / "downloads"))
+    archive = ArchiveManager(tmp_path / "archive.db")
+
+    dispatcher = QueueDispatcher(config=cfg, queue_manager=qm, archive=archive, router=router)
+    report = await dispatcher.run(concurrency=1)
+
+    assert report.total_items == 1
+    assert report.succeeded_count == 1
+
+    out = capsys.readouterr().out
+    assert "DOWNLOAD SUMMARY" in out
+    assert "Completed" in out
+    assert "Saved To:" in out
+

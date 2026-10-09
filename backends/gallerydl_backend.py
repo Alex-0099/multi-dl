@@ -24,8 +24,11 @@ from core.models import ArchiveEntry, DownloadProgress, DownloadTask, MediaType
 from core.terminal import Style, format_bytes
 
 
+_active_trackers = threading.local()
+
+
 class _GalleryDlLogHandler(logging.Handler):
-    """Formats gallery-dl internal logs to match MULTI_DOWNLOADER terminal tags and styling."""
+    """Formats gallery-dl and network library logs into the slot's verbose status tag."""
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -34,10 +37,18 @@ class _GalleryDlLogHandler(logging.Handler):
             if "netrc" in msg.lower() and "no authentication info" in msg.lower():
                 return
 
+            tracker = getattr(_active_trackers, "current", None)
+            clean_msg = re.sub(r'\[.*?\]\s*', '', msg).strip()
+
+            if tracker and tracker.progress_callback:
+                prefix = "ERROR" if record.levelno >= logging.ERROR else "WARNING"
+                tracker.on_warning(f"{prefix}: {clean_msg}")
+                return
+
             if record.levelno >= logging.ERROR:
-                sys.stdout.write(f"\r\033[K{Style.tag('❌', 'ERROR', Style.RED)} {Style.error(msg)}\n")
+                sys.stdout.write(f"\r\033[K{Style.tag('❌', 'ERROR', Style.RED)} {Style.error(clean_msg)}\n")
             elif record.levelno >= logging.WARNING:
-                sys.stdout.write(f"\r\033[K{Style.tag('⚠️', 'WARNING', Style.YELLOW)} {Style.warning(msg)}\n")
+                sys.stdout.write(f"\r\033[K{Style.tag('⚠️', 'WARNING', Style.YELLOW)} {Style.warning(clean_msg)}\n")
             sys.stdout.flush()
         except Exception:
             pass
@@ -70,6 +81,26 @@ class _GalleryDlBatchTracker:
         self.title_announced: bool = False
         self._lines_printed: int = 0
         self._is_tty: bool = sys.stdout.isatty() if hasattr(sys.stdout, "isatty") else True
+
+    def on_warning(self, warn_msg: str) -> None:
+        """Pushes a connection warning/issue directly into the live verbose tag without disturbing stdout."""
+        if self.progress_callback:
+            tot_b = sum(self._file_bytes.values())
+            pct = ((self.completed_count / self.total_files) * 100.0) if self.total_files else None
+            clean_tag = warn_msg.strip()
+            if len(clean_tag) > 36:
+                clean_tag = clean_tag[:33] + "..."
+            prog = DownloadProgress(
+                downloaded_bytes=tot_b,
+                total_bytes=None,
+                speed_bytes_sec=self.current_speed,
+                percent=pct,
+                current_file=self.album_title or self.current_filename or "Media",
+                total_files=self.total_files,
+                file_index=self.completed_count,
+                status_message=clean_tag,
+            )
+            self.progress_callback(prog)
 
     @staticmethod
     def _visible_len(s: str) -> int:
@@ -461,6 +492,22 @@ class GalleryDlBackend(BaseBackend):
                 gdl_logger.handlers = [_GalleryDlLogHandler()]
             gdl_logger.propagate = False
 
+    @staticmethod
+    def _apply_cookies(cookies_browser: Optional[str] = None, cookie_file: Optional[str] = None) -> None:
+        """Configures browser cookies or Netscape cookie file into gallery-dl."""
+        if cookies_browser:
+            browser, _, profile = cookies_browser.partition(":")
+            browser, _, keyring = browser.partition("+")
+            browser, _, domain = browser.partition("/")
+            if profile and profile.startswith(":"):
+                container = profile[1:]
+                profile = None
+            else:
+                profile, _, container = profile.partition("::")
+            gdl_config.set((), "cookies", (browser, profile or None, keyring, container, domain))
+        elif cookie_file and Path(cookie_file).exists():
+            gdl_config.set((), "cookies", str(Path(cookie_file).resolve()))
+
     def can_handle(self, url: str) -> bool:
         """Query gallery-dl's extractor registry for support."""
         self.pre_initialize()
@@ -472,6 +519,10 @@ class GalleryDlBackend(BaseBackend):
 
     async def extract_info(self, url: str) -> Dict[str, Any]:
         """Extract metadata without downloading media."""
+        cookies_browser = self.config.get("cookies_from_browser")
+        cookie_file = self.config.get("cookies_file")
+        self._apply_cookies(cookies_browser=cookies_browser, cookie_file=cookie_file)
+
         def _extract() -> Dict[str, Any]:
             self._configure_job()
             data_job = job.DataJob(url)
@@ -479,8 +530,22 @@ class GalleryDlBackend(BaseBackend):
             return getattr(data_job, "data", {})
 
         try:
-            return await asyncio.to_thread(_extract)
+            data = await asyncio.to_thread(_extract)
+            # Check for AuthRequired in data
+            if isinstance(data, list) and len(data) == 1 and isinstance(data[0], (list, tuple)) and isinstance(data[0][-1], dict) and data[0][-1].get("error") == "AuthRequired":
+                fallback_browser = self.config.get("fallback_browser_cookies", "firefox")
+                if not cookies_browser and fallback_browser:
+                    self._apply_cookies(cookies_browser=fallback_browser)
+                    return await asyncio.to_thread(_extract)
+            return data
         except Exception as e:
+            fallback_browser = self.config.get("fallback_browser_cookies", "firefox")
+            if not cookies_browser and fallback_browser and any(a in str(e).lower() for a in ("auth", "login", "password", "logged-in")):
+                self._apply_cookies(cookies_browser=fallback_browser)
+                try:
+                    return await asyncio.to_thread(_extract)
+                except Exception as retry_err:
+                    raise DownloadFailedError(f"gallery-dl metadata extraction failed with fallback cookies: {retry_err}")
             raise DownloadFailedError(f"gallery-dl metadata extraction failed: {e}")
 
     async def download(
@@ -493,16 +558,51 @@ class GalleryDlBackend(BaseBackend):
         tracker: Optional[_GalleryDlBatchTracker] = None
         quiet = bool(task.options.get("quiet") or progress_callback is not None)
 
+        cookies_browser = task.options.get("cookies_from_browser", self.config.get("cookies_from_browser"))
+        cookie_file = task.options.get("cookies", self.config.get("cookies_file"))
+        self._apply_cookies(cookies_browser=cookies_browser, cookie_file=cookie_file)
+
         def _run_download() -> int:
             nonlocal tracker
             self._configure_job(out_dir=out_dir, quiet=quiet)
 
             tracker = _GalleryDlBatchTracker(progress_callback=progress_callback, quiet=quiet)
-            dl_job = _MultiDlGalleryJob(task.url, tracker=tracker)
-            return dl_job.run()
+            _active_trackers.current = tracker
+
+            # Intercept warnings/errors from gallery-dl, downloader, and urllib network layers
+            handler = _GalleryDlLogHandler()
+            loggers_to_hook = [
+                logging.getLogger("gallery-dl"),
+                logging.getLogger("downloader"),
+                logging.getLogger("urllib3"),
+            ]
+            for lg in loggers_to_hook:
+                lg.addHandler(handler)
+
+            try:
+                dl_job = _MultiDlGalleryJob(task.url, tracker=tracker)
+                return dl_job.run()
+            finally:
+                for lg in loggers_to_hook:
+                    try:
+                        lg.removeHandler(handler)
+                    except Exception:
+                        pass
+                _active_trackers.current = None
 
         try:
             status_code = await asyncio.to_thread(_run_download)
+            if status_code == 20:  # ERROR_AUTHENTICATION in gallery-dl
+                fallback_browser = self.config.get("fallback_browser_cookies", "firefox")
+                if not cookies_browser and fallback_browser:
+                    auth_msg = f"AUTH: Retrying with {fallback_browser} cookies"
+                    if progress_callback:
+                        progress_callback(DownloadProgress(status_message=auth_msg))
+                    if not quiet:
+                        print(f"\n{Style.tag('⚠️', 'AUTH-REQUIRED', Style.YELLOW)} Forum or gallery requires sign-in. Automatically retrying with {Style.bold(fallback_browser)} cookies...")
+                    self._apply_cookies(cookies_browser=fallback_browser)
+                    status_code = await asyncio.to_thread(_run_download)
+
             if tracker:
                 tracker.finish()
             if status_code != 0:
@@ -511,25 +611,44 @@ class GalleryDlBackend(BaseBackend):
             if tracker:
                 tracker.finish()
 
-            # ── Automatic Failover to cyberdrop-dl ──
-            if self.config.get("enable_failover_to_cyberdrop", True):
+            err_str = str(e)
+            fallback_browser = self.config.get("fallback_browser_cookies", "firefox")
+            if not cookies_browser and fallback_browser and any(a in err_str.lower() for a in ("auth", "login", "password", "logged-in")):
                 try:
-                    from backends.cyberdrop_backend import CyberdropDlBackend
-                    cdl = CyberdropDlBackend()
-                    if cdl.can_handle(task.url):
-                        print(f"\n{Style.tag('🔄', 'FAILOVER', Style.YELLOW)} gallery-dl encountered an error ({e}).")
-                        print(f"{Style.tag('⚙️', 'FAILOVER', Style.CYAN)} Attempting automatic fallback with {Style.engine_badge('cyberdrop-dl')}...")
-                        fallback_task = DownloadTask(
-                            url=task.url,
-                            backend="cyberdrop-dl",
-                            output_dir=task.output_dir,
-                            options=task.options,
-                        )
-                        return await cdl.download(fallback_task, progress_callback=progress_callback)
-                except Exception:
-                    pass
+                    auth_msg = f"AUTH: Retrying with {fallback_browser} cookies"
+                    if progress_callback:
+                        progress_callback(DownloadProgress(status_message=auth_msg))
+                    if not quiet:
+                        print(f"\n{Style.tag('⚠️', 'AUTH-REQUIRED', Style.YELLOW)} Forum or gallery requires sign-in. Automatically retrying with {Style.bold(fallback_browser)} cookies...")
+                    self._apply_cookies(cookies_browser=fallback_browser)
+                    status_code = await asyncio.to_thread(_run_download)
+                    if status_code == 0:
+                        e = None
+                    else:
+                        raise DownloadFailedError(f"gallery-dl returned status code: {status_code}")
+                except Exception as retry_err:
+                    e = retry_err
 
-            raise DownloadFailedError(f"gallery-dl download failed: {e}")
+            if e is not None:
+                # ── Automatic Failover to cyberdrop-dl ──
+                if self.config.get("enable_failover_to_cyberdrop", True):
+                    try:
+                        from backends.cyberdrop_backend import CyberdropDlBackend
+                        cdl = CyberdropDlBackend()
+                        if cdl.can_handle(task.url):
+                            print(f"\n{Style.tag('🔄', 'FAILOVER', Style.YELLOW)} gallery-dl encountered an error ({e}).")
+                            print(f"{Style.tag('⚙️', 'FAILOVER', Style.CYAN)} Attempting automatic fallback with {Style.engine_badge('cyberdrop-dl')}...")
+                            fallback_task = DownloadTask(
+                                url=task.url,
+                                backend="cyberdrop-dl",
+                                output_dir=task.output_dir,
+                                options=task.options,
+                            )
+                            return await cdl.download(fallback_task, progress_callback=progress_callback)
+                    except Exception:
+                        pass
+
+                raise DownloadFailedError(f"gallery-dl download failed: {e}")
 
         downloaded_files = tracker.downloaded_files if tracker else []
         skipped_files = tracker.skipped_files if tracker else []
@@ -547,12 +666,32 @@ class GalleryDlBackend(BaseBackend):
                 album_dir = primary_path.parent
                 file_name = album_dir.name
                 file_path = str(album_dir.resolve())
+                # Check for postprocessed archive (e.g. cbz/zip created from individual files)
+                cbz_candidates = list(album_dir.glob("*.cbz")) + list(album_dir.parent.glob(f"{album_dir.name}*.cbz"))
+                if cbz_candidates:
+                    file_name = cbz_candidates[0].name
+                    file_path = str(cbz_candidates[0].resolve())
+                    if total_size == 0 and cbz_candidates[0].exists():
+                        total_size = cbz_candidates[0].stat().st_size
         else:
             # Fallback if extractor downloaded directly or files were already present
             primary_path = out_dir
             total_size = 0
             file_name = out_dir.name
             file_path = str(out_dir.resolve())
+
+        # If individual files were deleted by postprocessor, fall back to tracked download bytes
+        if tracker and tracker._file_bytes:
+            tracker_bytes = sum(tracker._file_bytes.values())
+            if tracker_bytes > total_size:
+                total_size = tracker_bytes
+
+        if total_size == 0 and Path(file_path).exists():
+            p_check = Path(file_path)
+            if p_check.is_file():
+                total_size = p_check.stat().st_size
+            elif p_check.is_dir():
+                total_size = sum(f.stat().st_size for f in p_check.rglob("*") if f.is_file())
 
         # Determine media type based on extensions
         first_ext = primary_path.suffix.lower() if primary_path.is_file() else ""

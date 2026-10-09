@@ -250,9 +250,34 @@ class EngineUpdater:
         return self._update_or_clone_git_repo("Terabox-dl", repo_url, candidate_paths)
 
     def update_cyberdropdl(self) -> Tuple[bool, str]:
-        """Updates cyberdrop-dl if installed."""
+        """Updates cyberdrop-dl if installed (via pip in .venv or standalone binary)."""
+        # 1. Check if installed in current Python environment via pip
         if self._get_pkg_version("cyberdrop-dl"):
             return self._pip_upgrade("cyberdrop-dl", "cyberdrop-dl")
+
+        # 2. Check for standalone binary (PATH, ~/.local/bin, etc.)
+        cdl_bin = shutil.which("cyberdrop-dl") or shutil.which("cyberdrop-dl.exe")
+        if not cdl_bin:
+            local_candidate = Path.home() / ".local" / "bin" / "cyberdrop-dl.exe"
+            if local_candidate.exists():
+                cdl_bin = str(local_candidate)
+
+        if cdl_bin:
+            try:
+                res = subprocess.run([cdl_bin, "--version"], capture_output=True, text=True, check=False, timeout=10)
+                ver_str = res.stdout.strip().splitlines()[-1] if res.stdout else "active"
+                # If uv or uvx tool exists, attempt upgrade
+                uv_bin = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv.exe")
+                if Path(uv_bin).exists():
+                    try:
+                        subprocess.run([uv_bin, "tool", "upgrade", "cyberdrop-dl"], capture_output=True, text=True, check=False, timeout=30)
+                    except Exception:
+                        pass
+                display_ver = "v" + ver_str if not ver_str.startswith("v") else ver_str
+                return True, f"Up to date ({Style.dim(display_ver)}) [{Style.dim(cdl_bin)}]"
+            except Exception as e:
+                return True, f"Binary located [{Style.dim(cdl_bin)}]: {e}"
+
         return True, "Not installed (skipped)"
 
     def update_self(self) -> Tuple[bool, str]:
