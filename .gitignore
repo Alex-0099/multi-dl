@@ -26,6 +26,7 @@ data/*.sqlite3
 data/*.db
 data/archives/
 data/queue.json
+data/batch_queue.json
 *.log
 
 # Distribution / packaging
@@ -37,3 +38,7 @@ tools/
 .pytest_cache/
 *.png
 
+# Comments
+testing.txt
+ytdlpdata.txt
+gallery-dl/
