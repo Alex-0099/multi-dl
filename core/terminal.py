@@ -159,3 +159,11 @@ class Style:
     def success(cls, text: str) -> str:
         return f"{cls.GREEN}{cls.BOLD}{text}{cls.RESET}"
 
+    @classmethod
+    def is_interactive(cls) -> bool:
+        """Checks if standard input is attached to an interactive terminal."""
+        try:
+            return sys.stdin is not None and sys.stdin.isatty()
+        except Exception:
+            return False
+

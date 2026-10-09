@@ -47,16 +47,40 @@ class URLRouter:
         "imgur.com": "gallery-dl",
         "danbooru.donmai.us": "gallery-dl",
         "deviantart.com": "gallery-dl",
+        "nhentai.net": "gallery-dl",
+        "www.nhentai.net": "gallery-dl",
 
-        # cyberdrop-dl
-        "cyberdrop.me": "cyberdrop-dl",
-        "bunkr.si": "cyberdrop-dl",
-        "bunkr.is": "cyberdrop-dl",
-        "gofile.io": "cyberdrop-dl",
-        "pixeldrain.com": "cyberdrop-dl",
-        "coomer.su": "cyberdrop-dl",
-        "kemono.su": "cyberdrop-dl",
-        "catbox.moe": "cyberdrop-dl",
+        # Common lockers where gallery-dl extractors are faster, more reliable, and do not drop files
+        "bunkr.si": "gallery-dl",
+        "bunkr.is": "gallery-dl",
+        "bunkr.cr": "gallery-dl",
+        "bunkr.black": "gallery-dl",
+        "bunkr.site": "gallery-dl",
+        "bunkr.ws": "gallery-dl",
+        "bunkr.ac": "gallery-dl",
+        "gofile.io": "gallery-dl",
+        "pixeldrain.com": "gallery-dl",
+        "coomer.su": "gallery-dl",
+        "coomer.party": "gallery-dl",
+        "kemono.su": "gallery-dl",
+        "kemono.party": "gallery-dl",
+        "catbox.moe": "gallery-dl",
+        "files.catbox.moe": "gallery-dl",
+        "erome.com": "gallery-dl",
+        "fapello.com": "gallery-dl",
+        "cyberdrop.me": "gallery-dl",
+        "simpcity.su": "gallery-dl",
+        "simpcity.to": "gallery-dl",
+
+        # cyberdrop-dl (Primary for deep forum threads and hosts without gallery-dl support)
+        "saint.to": "cyberdrop-dl",
+        "f95zone.to": "cyberdrop-dl",
+        "vipergirls.to": "cyberdrop-dl",
+        "mega.nz": "cyberdrop-dl",
+        "sendvid.com": "cyberdrop-dl",
+        "streamtape.com": "cyberdrop-dl",
+        "puter.com": "cyberdrop-dl",
+        "jpg.church": "cyberdrop-dl",
 
         # telegram-dl
         "t.me": "telegram-dl",
@@ -152,6 +176,16 @@ class URLRouter:
         # TeraBox specific normalization
         if any(d in domain for d in ("terabox", "1024tera", "mirrobox", "nephobox", "4funbox")):
             return "terabox"
+
+        # Locker & community host normalization
+        if "bunkr" in domain:
+            return "bunkr"
+        if "catbox" in domain:
+            return "catbox"
+        if "coomer" in domain:
+            return "coomer"
+        if "kemono" in domain:
+            return "kemono"
 
 
         # General domain simplification (e.g. www.twitter.com -> twitter)

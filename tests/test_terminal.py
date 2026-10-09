@@ -99,11 +99,16 @@ def test_interactive_banner(capsys):
     multi_dl.print_banner(cfg, archive)
     captured = capsys.readouterr().out
 
-    assert "MULTI_DOWNLOADER v1.0" in captured
+    assert f"MULTI_DOWNLOADER v{multi_dl.__version__}" in captured
     assert "Configuration" in captured
     assert "Interactive Mode" in captured
     assert "Enter URL:" not in captured  # prompt is printed in input() loop
     assert "[yt-dlp]" in captured
     assert "[terabox-dl]" in captured
+    assert "[cyberdrop-dl]" in captured
+
+
+def test_is_interactive():
+    assert isinstance(Style.is_interactive(), bool)
 
 

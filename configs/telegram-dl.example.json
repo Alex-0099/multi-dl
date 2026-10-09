@@ -1,0 +1,17 @@
+{
+  "// ─── MULTI_DOWNLOADER: Telegram-dl Modular Configuration ───": "",
+  "// Path to the Telethon session file (without .session extension, null defaults to telegram_dl_session)": "",
+  "session_path": null,
+  "// Path to custom .env file (optional, null checks project root and system env)": "",
+  "env_file": null,
+  "// Direct Telegram API ID (integer) if not using .env": "",
+  "api_id": null,
+  "// Direct Telegram API Hash (string) if not using .env": "",
+  "api_hash": null,
+  "// Allowed media types to download": "",
+  "media_types": ["photo", "video", "document", "audio", "voice", "sticker"],
+  "// Chunk buffer size in KB (512 is maximum Telegram limit for highest transfer speed)": "",
+  "chunk_size_kb": 512,
+  "// Automatically fetch and download full multi-media albums when a single album link is passed": "",
+  "auto_download_albums": true
+}

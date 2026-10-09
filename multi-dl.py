@@ -21,6 +21,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+__version__ = "4.2.3"
+
 from core.terminal import Style
 
 
@@ -40,6 +42,7 @@ from backends.gallerydl_backend import GalleryDlBackend
 from backends.telegram_backend import TelegramDlBackend
 from backends.terabox_backend import TeraboxDlBackend
 from backends.ytdlp_backend import YtDlpBackend
+from backends.cyberdrop_backend import CyberdropDlBackend
 from core.archive import ArchiveManager
 from core.config import ConfigManager
 from core.exceptions import MultiDLError
@@ -82,7 +85,11 @@ def print_progress(p: DownloadProgress):
         eta_m, eta_s = divmod(int(p.eta_seconds), 60)
         eta_part = f" {Style.dim('ETA')} {Style.yellow(f'{eta_m:02d}:{eta_s:02d}')}"
 
-    sys.stdout.write(f"\r\033[K{tag_part} {bar_part} {sizes_part} {speed_part}{eta_part}")
+    batch_part = ""
+    if p.total_files and p.total_files > 1 and p.file_index:
+        batch_part = f" {Style.dim('(')}{Style.cyan(f'{p.file_index}/{p.total_files}')}{Style.dim(')')}"
+
+    sys.stdout.write(f"\r\033[K{tag_part} {bar_part} {sizes_part}{batch_part} {speed_part}{eta_part}")
     sys.stdout.flush()
 
 
@@ -96,12 +103,14 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
     gallerydl = GalleryDlBackend(config.get_backend_config("gallery-dl"))
     telegram = TelegramDlBackend(config.get_backend_config("telegram-dl"))
     terabox = TeraboxDlBackend(config.get_backend_config("terabox-dl"))
+    cyberdrop = CyberdropDlBackend(config.get_backend_config("cyberdrop-dl"))
 
     router = URLRouter()
     router.register_backend(ytdlp)
     router.register_backend(gallerydl)
     router.register_backend(telegram)
     router.register_backend(terabox)
+    router.register_backend(cyberdrop)
 
     try:
         backend = router.route(url, backend_override=backend_name)
@@ -140,7 +149,7 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
         print(f"{Style.tag('🚀', 'DOWNLOADING', Style.BLUE)} Starting transfer...")
         progress_cb = None if backend.name == "gallery-dl" else print_progress
         entry = await backend.download(task, progress_callback=progress_cb)
-        print(f"\n{Style.tag('✅', 'COMPLETED', Style.GREEN)} {Style.success('Download finished successfully!')}")
+        all_skipped = bool((entry.metadata or {}).get("all_skipped", False))
 
         # Format clean path starting with ~downloads\
         raw_path = Path(entry.file_path)
@@ -150,7 +159,13 @@ async def download_url(url: str, backend_name: str = None, options: dict = None)
         except ValueError:
             clean_display_path = f"~downloads\\{raw_path.name}"
 
-        print(f"{Style.tag('📁', 'SAVED', Style.GREEN)} {Style.path(clean_display_path)}")
+        if all_skipped:
+            skip_cnt = (entry.metadata or {}).get("skipped_count", 1)
+            print(f"\n{Style.tag('⏩', 'SKIPPED', Style.YELLOW)} {Style.yellow(f'File already exists on disk ({skip_cnt} skipped, 0 downloaded).')}")
+            print(f"{Style.tag('📁', 'EXISTING', Style.CYAN)} {Style.path(clean_display_path)}")
+        else:
+            print(f"\n{Style.tag('✅', 'COMPLETED', Style.GREEN)} {Style.success('Download finished successfully!')}")
+            print(f"{Style.tag('📁', 'SAVED', Style.GREEN)} {Style.path(clean_display_path)}")
 
         # Compute hash and record in archive (if enabled)
         if archive_enabled:
@@ -180,9 +195,9 @@ def print_banner(config: ConfigManager, archive: ArchiveManager) -> None:
     bot_border = f"{Style.CYAN}╚{bar}╝{Style.RESET}"
 
     print(f"\n{top_border}")
-    print(_box_line(f"{Style.BOLD}{Style.WHITE}MULTI_DOWNLOADER v1.0{Style.RESET}"))
+    print(_box_line(f"{Style.BOLD}{Style.WHITE}MULTI_DOWNLOADER v{__version__}{Style.RESET}"))
     print(_box_line(f"{Style.WHITE}Universal Modular Media & File Downloader{Style.RESET}"))
-    print(_box_line(f"{Style.DIM}yt-dlp • gallery-dl • Terabox-dl • Telegram-dl{Style.RESET}"))
+    print(_box_line(f"{Style.DIM}yt-dlp • gallery-dl • Terabox-dl • Telegram-dl • cyberdrop-dl{Style.RESET}"))
     print(f"{bot_border}\n")
 
     # Configuration section
@@ -211,6 +226,7 @@ def print_banner(config: ConfigManager, archive: ArchiveManager) -> None:
         Style.engine_badge("gallery-dl"),
         Style.engine_badge("terabox-dl"),
         Style.engine_badge("telegram-dl"),
+        Style.engine_badge("cyberdrop-dl"),
     ])
     print(f"  {Style.dim('Engines:')}   {badges}\n")
 
@@ -311,17 +327,22 @@ def main():
             ok, msg = updater.update_self()
             print(f"MULTI_DOWNLOADER: {msg}")
         else:
-            print(f"{Style.tag('❌', 'UNKNOWN', Style.RED)} Unknown engine '{target}'. Use: yt-dlp, gallery-dl, terabox-dl, telegram-dl, curl_cffi, or all.")
+            print(f"{Style.tag('❌', 'UNKNOWN', Style.RED)} Unknown engine '{target}'. Use: yt-dlp, gallery-dl, terabox-dl, telegram-dl, cyberdrop-dl, curl_cffi, or all.")
+        return
+
+    # Version flag check
+    if any(arg in sys.argv[1:] for arg in ("-v", "--version")):
+        print(f"MULTI_DOWNLOADER v{__version__}")
         return
 
     # Subcommands list
-    subcommands = {"archive", "route", "queue", "config", "update"}
+    subcommands = {"archive", "route", "queue", "config", "update", "auth", "login"}
 
     # Direct URL mode: e.g. python multi-dl.py https://... [--backend yt-dlp] [--cookies-from-browser chrome]
     if raw_args and raw_args[0] not in subcommands and not raw_args[0].startswith("-h") and not raw_args[0] == "--help":
         direct_parser = argparse.ArgumentParser(description="MULTI_DOWNLOADER CLI")
         direct_parser.add_argument("url", help="Media URL to download directly")
-        direct_parser.add_argument("--backend", "-b", help="Force specific backend (yt-dlp, gallery-dl, telegram-dl)")
+        direct_parser.add_argument("--backend", "-b", help="Force specific backend (yt-dlp, gallery-dl, terabox-dl, telegram-dl, cyberdrop-dl)")
         direct_parser.add_argument("--cookies-from-browser", help="Load cookies from browser (e.g. chrome, firefox, edge, brave, opera)")
         direct_parser.add_argument("--cookies", help="Path to cookies.txt file")
         direct_parser.add_argument("--format", "-f", help="Format selection string (e.g. bestvideo*+bestaudio/best)")
@@ -346,6 +367,7 @@ def main():
         description="MULTI_DOWNLOADER CLI - Universal Media Downloader",
         epilog="Tip: You can download directly with: python multi-dl.py <URL>"
     )
+    parser.add_argument("-v", "--version", action="version", version=f"MULTI_DOWNLOADER v{__version__}")
     parser.add_argument("-U", "--update", action="store_true", help="Update all download engines to their latest versions")
     parser.add_argument("-i", "--interactive", action="store_true", help="Launch interactive link pasting session")
     subparsers = parser.add_subparsers(dest="command")
@@ -353,10 +375,15 @@ def main():
     # 'interactive' command
     subparsers.add_parser("interactive", help="Start interactive link pasting session")
 
+    # 'auth' / 'login' command
+    auth_parser = subparsers.add_parser("auth", help="Configure engine authentication (telegram, terabox, all)")
+    auth_parser.add_argument("engine", nargs="?", default="all", help="Engine to authenticate (telegram, terabox, all)")
+    subparsers.add_parser("login", help="Alias for 'auth'")
+
     # Optional 'download' subcommand (for backward compatibility)
     dl_parser = subparsers.add_parser("download", help="Download a URL (optional, you can just pass the URL directly)")
     dl_parser.add_argument("url", help="Media URL to download")
-    dl_parser.add_argument("--backend", "-b", help="Force specific backend (yt-dlp, gallery-dl, terabox-dl, telegram-dl)")
+    dl_parser.add_argument("--backend", "-b", help="Force specific backend (yt-dlp, gallery-dl, terabox-dl, telegram-dl, cyberdrop-dl)")
     dl_parser.add_argument("--cookies-from-browser", help="Load cookies from browser (e.g. chrome, firefox, edge, brave)")
     dl_parser.add_argument("--cookies", help="Path to cookies.txt file")
     dl_parser.add_argument("--format", "-f", help="Format selection string")
@@ -364,7 +391,7 @@ def main():
 
     # 'update' command
     up_parser = subparsers.add_parser("update", help="Update download engines to their latest versions")
-    up_parser.add_argument("engine", nargs="?", default="all", help="Specific engine to update (all, yt-dlp, gallery-dl, terabox-dl, telegram-dl)")
+    up_parser.add_argument("engine", nargs="?", default="all", help="Specific engine to update (all, yt-dlp, gallery-dl, terabox-dl, telegram-dl, cyberdrop-dl)")
 
     # 'archive' command
     arc_parser = subparsers.add_parser("archive", help="Inspect download archive")
@@ -407,6 +434,7 @@ def main():
             "gallery-dl": GalleryDlBackend(),
             "telegram-dl": TelegramDlBackend(),
             "terabox-dl": TeraboxDlBackend(),
+            "cyberdrop-dl": CyberdropDlBackend(),
         })
         try:
             b = router.route(args.url)
@@ -430,6 +458,27 @@ def main():
             print(f"\nFound {Style.cyan(str(len(results)))} matches:")
             for r in results:
                 print(f"  {Style.tag('📁', r.backend, Style.engine_color(r.backend))} {Style.white(r.file_name)} {Style.dim(f'({r.url})')}")
+    elif args.command in ("auth", "login"):
+        target = (getattr(args, "engine", "all") or "all").lower()
+        config = ConfigManager()
+
+        if target in ("telegram", "telegram-dl", "all"):
+            print(f"\n{Style.tag('🔑', 'AUTH', Style.BLUE)} Initializing Telegram authorization...")
+            tg_backend = TelegramDlBackend(config.get_backend_config("telegram-dl"))
+            try:
+                asyncio.run(tg_backend._ensure_client())
+                print(f"{Style.tag('✅', 'READY', Style.GREEN)} Telegram account is authorized and ready for downloads.")
+            except Exception as e:
+                print(f"{Style.tag('❌', 'AUTH ERROR', Style.RED)} {Style.error(str(e))}")
+
+        if target in ("terabox", "terabox-dl", "all"):
+            print(f"\n{Style.tag('🔑', 'AUTH', Style.CYAN)} Configuring TeraBox credentials...")
+            tb_backend = TeraboxDlBackend(config.get_backend_config("terabox-dl"))
+            try:
+                tb_backend._prompt_ndus_cookie()
+                print(f"{Style.tag('✅', 'READY', Style.GREEN)} TeraBox credentials configured.")
+            except Exception as e:
+                print(f"{Style.tag('❌', 'AUTH ERROR', Style.RED)} {Style.error(str(e))}")
     else:
         parser.print_help()
 

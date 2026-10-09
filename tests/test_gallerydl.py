@@ -91,4 +91,35 @@ def test_gallerydl_nested_album_metadata():
     assert tracker._visible_len(sample) == 11
 
 
+@pytest.mark.asyncio
+async def test_gallerydl_failover_to_cyberdrop(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock, AsyncMock, patch
+    from core.models import DownloadTask
+
+    backend = GalleryDlBackend({"enable_failover_to_cyberdrop": True})
+    task = DownloadTask(
+        url="https://bunkr.cr/a/sample123",
+        backend="gallery-dl",
+        output_dir=str(tmp_path),
+    )
+
+    # Force gallery-dl download to raise an exception
+    def failing_run(*args, **kwargs):
+        raise RuntimeError("Simulated gallery-dl HTTP 500 failure")
+
+    monkeypatch.setattr(backend, "_configure_job", failing_run)
+
+    # Mock cyberdrop-dl backend
+    mock_cdl_instance = MagicMock()
+    mock_cdl_instance.can_handle.return_value = True
+    mock_entry = MagicMock(file_path=str(tmp_path / "fallback.mp4"), backend="cyberdrop-dl")
+    mock_cdl_instance.download = AsyncMock(return_value=mock_entry)
+
+    with patch("backends.cyberdrop_backend.CyberdropDlBackend", return_value=mock_cdl_instance):
+        result = await backend.download(task)
+        assert result.backend == "cyberdrop-dl"
+        mock_cdl_instance.download.assert_called_once()
+
+
+
 

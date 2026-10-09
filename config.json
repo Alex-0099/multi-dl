@@ -1,5 +1,5 @@
 {
-    "version": "1.0.0",
+    "version": "4.2.3",
     "general": {
         "download_dir": "downloads",
         "concurrent_downloads": 3,
@@ -42,6 +42,7 @@
     "cyberdrop_dl": {
         "max_simultaneous": 5,
         "use_domain_subfolders": true,
+        "config_file": "configs/cyberdrop-dl.json",
         "executable_path": "cyberdrop-dl"
     },
     "telegram_dl": {

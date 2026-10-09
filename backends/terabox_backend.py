@@ -358,6 +358,48 @@ class TeraboxDlBackend(BaseBackend):
 
         return ""
 
+    def _save_modular_config(self) -> None:
+        """Persists updated configuration back to configs/terabox-dl.json."""
+        cfg_path_str = self.config.get("config_file", "configs/terabox-dl.json")
+        cfg_path = Path(cfg_path_str)
+        if not cfg_path.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent
+            cfg_path = project_root / cfg_path
+
+        try:
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            current_data: Dict[str, Any] = {}
+            if cfg_path.exists():
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        current_data = json.load(f)
+                except Exception:
+                    pass
+            current_data["ndus_cookie"] = self.config.get("ndus_cookie", "")
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(current_data, f, indent=2)
+        except Exception:
+            pass
+
+    def _prompt_ndus_cookie(self, reason: str = "") -> str:
+        """Interactively prompts the user for their TeraBox NDUS cookie."""
+        print(f"\n{Style.tag('🍪', 'TERABOX AUTH', Style.CYAN)} {Style.bold('TeraBox account cookie (ndus) required.')}")
+        if reason:
+            print(f"{Style.dim(f'   Notice: {reason}')}")
+        print(f"{Style.dim('   How to get your ndus cookie:')}")
+        print(f"{Style.dim('   1. Log into https://www.terabox.com (or 1024tera.com) in your web browser.')}")
+        print(f"{Style.dim('   2. Open Developer Tools (F12) -> Application / Storage -> Cookies -> terabox.com.')}")
+        print(f"{Style.dim('   3. Locate the cookie named \"ndus\" and copy its Value.')}\n")
+
+        val = input(f"{Style.cyan('Enter TeraBox ndus cookie: ')}").strip()
+        if not val:
+            raise AuthenticationError("TeraBox download cancelled: No ndus cookie provided.")
+
+        self.config["ndus_cookie"] = val
+        self._save_modular_config()
+        print(f"\n{Style.tag('💾', 'SAVED', Style.GREEN)} Cookie saved to {Style.path('configs/terabox-dl.json')}\n")
+        return val
+
     def _create_session(self, ndus_cookie: str) -> requests.Session:
         """Initializes a configured requests Session with cookies and headers."""
         session = requests.Session()
@@ -462,6 +504,15 @@ class TeraboxDlBackend(BaseBackend):
                 if errno != 0:
                     err_msg = _get_error_message(errno)
                     if errno in (-20, 12, 112):
+                        if Style.is_interactive():
+                            new_cookie = self._prompt_ndus_cookie(reason=err_msg)
+                            for domain in [".terabox.com", ".1024tera.com", ".teraboxlink.com", ".freeterabox.com"]:
+                                session.cookies.set("ndus", new_cookie, domain=domain)
+                            self._cached_js_token = None
+                            js_token = self._fetch_js_token(session, target_url)
+                            if js_token:
+                                params["jsToken"] = js_token
+                            continue
                         raise AuthenticationError(f"{err_msg} (Provide a valid ndus cookie)")
                     raise DownloadFailedError(err_msg)
 
@@ -577,6 +628,13 @@ class TeraboxDlBackend(BaseBackend):
                 resp_data = resp.json()
                 if resp_data.get("errno") == 0 and resp_data.get("list"):
                     return resp_data["list"][0].get("dlink")
+                if resp_data.get("errno") in (-20, 12, 112):
+                    if Style.is_interactive():
+                        err_msg = _get_error_message(resp_data.get("errno"))
+                        new_cookie = self._prompt_ndus_cookie(reason=err_msg)
+                        for domain in [".terabox.com", ".1024tera.com", ".teraboxlink.com", ".freeterabox.com"]:
+                            session.cookies.set("ndus", new_cookie, domain=domain)
+                        continue
                 time.sleep(1)
             except Exception:
                 time.sleep(1)

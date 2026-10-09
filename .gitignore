@@ -14,6 +14,8 @@ ENV/
 .env
 configs/gallery-dl.json
 configs/terabox-dl.json
+configs/telegram-dl.json
+configs/cyberdrop-dl.json
 cookies/
 *cookies*.txt
 

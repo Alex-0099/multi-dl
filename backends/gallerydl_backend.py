@@ -55,6 +55,7 @@ class _GalleryDlBatchTracker:
         self.completed_count: int = 0
         self.skipped_count: int = 0
         self.downloaded_files: List[str] = []
+        self.skipped_files: List[str] = []
         self._file_bytes: Dict[str, int] = {}
 
         # Current file metrics
@@ -153,6 +154,7 @@ class _GalleryDlBatchTracker:
         self.skipped_count += 1
         self.completed_count += 1
         p = Path(path)
+        self.skipped_files.append(str(p.resolve()))
         self.current_filename = p.name
         if p.exists():
             self._file_bytes[p.name] = p.stat().st_size
@@ -409,15 +411,37 @@ class GalleryDlBackend(BaseBackend):
         except Exception as e:
             if tracker:
                 tracker.finish()
+
+            # ── Automatic Failover to cyberdrop-dl ──
+            if self.config.get("enable_failover_to_cyberdrop", True):
+                try:
+                    from backends.cyberdrop_backend import CyberdropDlBackend
+                    cdl = CyberdropDlBackend()
+                    if cdl.can_handle(task.url):
+                        print(f"\n{Style.tag('🔄', 'FAILOVER', Style.YELLOW)} gallery-dl encountered an error ({e}).")
+                        print(f"{Style.tag('⚙️', 'FAILOVER', Style.CYAN)} Attempting automatic fallback with {Style.engine_badge('cyberdrop-dl')}...")
+                        fallback_task = DownloadTask(
+                            url=task.url,
+                            backend="cyberdrop-dl",
+                            output_dir=task.output_dir,
+                            options=task.options,
+                        )
+                        return await cdl.download(fallback_task, progress_callback=progress_callback)
+                except Exception:
+                    pass
+
             raise DownloadFailedError(f"gallery-dl download failed: {e}")
 
         downloaded_files = tracker.downloaded_files if tracker else []
+        skipped_files = tracker.skipped_files if tracker else []
+        all_skipped = len(downloaded_files) == 0 and len(skipped_files) > 0
         
         # Resolve primary file or folder path
-        if downloaded_files:
-            primary_path = Path(downloaded_files[0])
-            total_size = sum(Path(f).stat().st_size for f in downloaded_files if Path(f).exists())
-            if len(downloaded_files) == 1:
+        files_to_check = downloaded_files if downloaded_files else skipped_files
+        if files_to_check:
+            primary_path = Path(files_to_check[0])
+            total_size = sum(Path(f).stat().st_size for f in files_to_check if Path(f).exists())
+            if len(files_to_check) == 1:
                 file_name = primary_path.name
                 file_path = str(primary_path.resolve())
             else:
@@ -454,6 +478,9 @@ class GalleryDlBackend(BaseBackend):
             media_type=media_type,
             metadata={
                 "downloaded_files": downloaded_files,
+                "skipped_files": skipped_files,
+                "all_skipped": all_skipped,
                 "file_count": len(downloaded_files),
+                "skipped_count": len(skipped_files),
             },
         )

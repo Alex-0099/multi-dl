@@ -92,3 +92,33 @@ def test_terabox_router_integration():
 
     host_id_1024 = URLRouter.get_host_identifier("https://1024tera.com/s/1ABCxyz", "terabox-dl")
     assert host_id_1024 == "terabox"
+
+
+def test_prompt_ndus_cookie(monkeypatch, tmp_path):
+    cfg_file = tmp_path / "terabox-dl.json"
+    backend = TeraboxDlBackend({"config_file": str(cfg_file)})
+
+    monkeypatch.setattr("builtins.input", lambda _: "sample_ndus_12345")
+
+    cookie = backend._prompt_ndus_cookie()
+    assert cookie == "sample_ndus_12345"
+    assert backend.config["ndus_cookie"] == "sample_ndus_12345"
+    assert cfg_file.exists()
+
+
+def test_non_interactive_auth_errno(monkeypatch):
+    from unittest.mock import MagicMock
+    from core.exceptions import AuthenticationError
+
+    backend = TeraboxDlBackend()
+    monkeypatch.setattr("core.terminal.Style.is_interactive", lambda: False)
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"errno": -20}
+
+    mock_session = MagicMock()
+    mock_session.get.return_value = mock_resp
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        backend._get_share_info(mock_session, "1testkey", "https://terabox.com/s/1testkey")
+    assert "ndus cookie" in str(exc_info.value).lower()

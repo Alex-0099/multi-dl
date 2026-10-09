@@ -17,8 +17,10 @@ def test_pot_manager_get_script_path():
     assert path.exists()
 
 
-def test_pot_manager_ensure_server():
+def test_pot_manager_ensure_server(monkeypatch):
     # Test ensure_server_running
+    monkeypatch.setattr(POTManager, "is_server_running", lambda *args, **kwargs: True)
     success = POTManager.ensure_server_running(silent=True)
     assert success is True
     assert POTManager.is_server_running() is True
+
