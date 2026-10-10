@@ -46,7 +46,8 @@
             }
         ],
         "archive": [
-            "data/archives",
+            "data",
+            "archives",
             "{category}.sqlite3"
         ],
         "browser": "firefox",

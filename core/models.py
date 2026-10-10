@@ -79,17 +79,20 @@ class QueueItem:
     error_message: Optional[str] = None
 
 
+import uuid
+
+
 @dataclass
 class ArchiveEntry:
     """Record of a completed download saved to the SQLite archive."""
-    id: str
     url: str
     file_path: str
     file_name: str
-    file_hash: Optional[str]
-    file_size: Optional[int]
     backend: str
-    source_site: Optional[str]
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    file_hash: Optional[str] = None
+    file_size: Optional[int] = None
+    source_site: Optional[str] = None
     media_type: MediaType = MediaType.UNKNOWN
     metadata: Dict[str, Any] = field(default_factory=dict)
     downloaded_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

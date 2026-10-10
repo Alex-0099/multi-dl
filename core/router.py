@@ -290,3 +290,120 @@ class URLRouter:
             return parts[0] if parts else domain
 
         return domain or "misc"
+
+    @staticmethod
+    def is_container_url(url: str, backend_name: Optional[str] = None) -> bool:
+        """
+        Determines whether a URL represents a collection/container (playlist, album, channel,
+        user bookmark folder, subreddit, forum thread, or locker album) that contains multiple
+        items and may receive new items over time.
+
+        Container URLs should not be skipped as a whole at the queue level just because they
+        were processed once. Instead, their individual items are checked against backend archives.
+        """
+        if not url:
+            return False
+
+        parsed = urlparse(url)
+        domain = (parsed.netloc or "").lower().split(":")[0]
+        path = parsed.path.rstrip("/")
+        path_lower = path.lower()
+        query = (parsed.query or "").lower()
+
+        # Direct media files are NEVER containers
+        if any(path_lower.endswith(ext) for ext in (
+            ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".mp3", ".m4a", ".flac",
+            ".jpg", ".jpeg", ".png", ".gif", ".webp", ".zip", ".rar", ".7z", ".pdf"
+        )):
+            return False
+
+        # 1. YouTube & video platforms
+        if "youtube" in domain or "youtu.be" in domain:
+            if "list=" in query:
+                return True
+            if any(path_lower.startswith(p) for p in ("/channel/", "/c/", "/user/", "/@")):
+                return True
+            return False
+
+        if "vimeo.com" in domain:
+            if any(p in path_lower for p in ("/channels/", "/groups/", "/album/")):
+                return True
+
+        if "tiktok.com" in domain:
+            if "/@" in path_lower and "/video/" not in path_lower:
+                return True
+            return False
+
+        # 2. Instagram
+        if "instagram.com" in domain:
+            if any(s in path_lower for s in ("/saved", "/all-posts", "/bookmarks", "/stories", "/tagged")):
+                return True
+            if any(s in path_lower for s in ("/p/", "/reel/", "/tv/")):
+                return False
+            parts = [p for p in path.split("/") if p]
+            if len(parts) == 1 and parts[0] not in ("explore", "direct", "accounts"):
+                return True
+            return False
+
+        # 3. Twitter / X
+        if "twitter.com" in domain or "x.com" in domain:
+            if "/status/" in path_lower or "/i/web/status/" in path_lower:
+                return False
+            if any(s in path_lower for s in ("/likes", "/media", "/bookmarks")):
+                return True
+            parts = [p for p in path.split("/") if p]
+            if len(parts) == 1 and parts[0] not in ("home", "explore", "messages", "settings"):
+                return True
+            return False
+
+        # 4. Reddit
+        if "reddit.com" in domain:
+            if "/comments/" in path_lower:
+                return False
+            if "/r/" in path_lower or "/user/" in path_lower:
+                return True
+            return False
+
+        # 5. Lockers (Bunkr, Coomer, Kemono, Cyberdrop, Saint, Gofile)
+        if "bunkr" in domain:
+            if "/a/" in path_lower or "/album/" in path_lower:
+                return True
+            return False
+
+        if any(d in domain for d in ("coomer", "kemono")):
+            if "/post/" in path_lower:
+                return False
+            if "/user/" in path_lower:
+                return True
+            return False
+
+        if any(d in domain for d in ("cyberdrop", "saint.to", "gofile")):
+            if "/a/" in path_lower or "/album/" in path_lower or "/d/" in path_lower:
+                return True
+
+        # 6. Forums & Community Threads
+        if any(f in domain for f in ("forum", "forums", "board", "community", "simpcity", "socialmediagirls", "vipergirls")):
+            if any(t in path_lower for t in ("/threads/", "/thread-", "/forum/", "/forums/", "/boards/")):
+                return True
+
+        # 7. Telegram
+        if "t.me" in domain or "telegram.me" in domain:
+            parts = [p for p in path.split("/") if p]
+            if len(parts) == 1:
+                return True
+            elif len(parts) == 2 and parts[0] == "c":
+                return True
+            return False
+
+        # 8. TeraBox (share folder links often have many files)
+        if any(d in domain for d in ("terabox", "1024tera", "mirrobox", "nephobox", "4funbox")):
+            return True
+
+        # 9. Pixiv
+        if "pixiv.net" in domain:
+            if any(p in path_lower for p in ("/users/", "/bookmarks", "/series/")):
+                return True
+            if "/artworks/" in path_lower:
+                return False
+
+        return False

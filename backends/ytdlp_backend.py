@@ -29,6 +29,7 @@ class YtDlpStatusLogger:
         self._last_msg = ""
         self.last_error = ""
         self.current_status = ""
+        self.already_archived = False
 
     def _safe_print(self, text: str):
         if self.quiet:
@@ -46,7 +47,11 @@ class YtDlpStatusLogger:
 
     def _handle_log(self, msg: str):
         status = None
-        if "[pot:bgutil:http]" in msg:
+        if "has already been recorded in the archive" in msg or "has already been downloaded" in msg:
+            self.already_archived = True
+            status = "SKIPPED: Already recorded in archive"
+            self._safe_print(f"{Style.tag('⚠️', 'ARCHIVE', Style.YELLOW)} Video already recorded in download archive.")
+        elif "[pot:bgutil:http]" in msg:
             status = "PO-TOKEN: Generating token via sidecar"
             self._safe_print(f"{Style.tag('⚙️', 'PO-TOKEN', Style.MAGENTA)} Generating Proof-of-Origin token via sidecar...")
         elif "[jsc:" in msg or "Solving JS challenges" in msg:
@@ -369,6 +374,16 @@ class YtDlpBackend(BaseBackend):
             "remote_components": ["ejs:github"],  # Automatic JS challenge solver for age-restricted / n-sig
             "extractor_args": extractor_args,
         })
+        # Configure download archive if enabled
+        archive_path = task.options.get("download_archive", self.config.get("download_archive", "data/archives/ytdlp_archive.txt"))
+        if archive_path and not task.options.get("no_archive") and not task.options.get("force"):
+            arc_p = Path(archive_path)
+            if not arc_p.is_absolute():
+                project_root = Path(__file__).resolve().parent.parent
+                arc_p = project_root / arc_p
+            arc_p.parent.mkdir(parents=True, exist_ok=True)
+            ydl_opts["download_archive"] = str(arc_p.resolve())
+
         if quiet:
             ydl_opts["quiet"] = True
             ydl_opts["no_warnings"] = True
@@ -497,6 +512,20 @@ class YtDlpBackend(BaseBackend):
                 path_obj = candidate
 
         if not path_obj or not path_obj.exists() or not path_obj.is_file():
+            if status_logger.already_archived:
+                clean_title = info.get("title", "Video") if info else "Video"
+                return ArchiveEntry(
+                    id=str(uuid.uuid4()),
+                    url=task.url,
+                    file_path=str(out_dir),
+                    file_name=clean_title,
+                    file_hash=None,
+                    file_size=0,
+                    backend=self.name,
+                    source_site=info.get("extractor_key") or info.get("extractor") if info else "unknown",
+                    media_type=MediaType.VIDEO,
+                    metadata={"all_skipped": True, "title": clean_title},
+                )
             err_msg = status_logger.last_error or "yt-dlp completed without producing a valid media file."
             raise DownloadFailedError(err_msg)
 
@@ -505,6 +534,7 @@ class YtDlpBackend(BaseBackend):
         # Clean title fallback
         title = info.get("title", path_obj.stem) if info else path_obj.stem
         uploader = info.get("uploader", "Unknown") if info else "Unknown"
+        is_skipped = bool(status_logger.already_archived)
 
         return ArchiveEntry(
             id=str(uuid.uuid4()),
@@ -522,5 +552,6 @@ class YtDlpBackend(BaseBackend):
                 "duration": info.get("duration") if info else None,
                 "id": info.get("id") if info else None,
                 "resolution": info.get("resolution") if info else None,
+                "all_skipped": is_skipped,
             },
         )

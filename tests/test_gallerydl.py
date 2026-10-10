@@ -181,6 +181,45 @@ def test_gallerydl_warning_routed_to_verbose_tag():
         _active_trackers.current = None
 
 
+def test_gallerydl_bunkr_album_folder_title_resolution():
+    """Verifies that Bunkr albums resolve their folder/album name on Row 1 and individual filenames on Row 2."""
+    from backends.gallerydl_backend import _GalleryDlBatchTracker
+    from core.models import DownloadProgress
+
+    captured = []
+
+    def cb(prog: DownloadProgress):
+        captured.append(prog)
+
+    tracker = _GalleryDlBatchTracker(progress_callback=cb)
+
+    # 1. Bunkr metadata passed to on_directory
+    bunkr_meta = {
+        "album_id": "BnSIi8je",
+        "album_name": "faixa",
+        "album_size": "100.56 MB",
+        "count": 30,
+        "category": "bunkr",
+        "subcategory": "album",
+    }
+    tracker.on_directory(bunkr_meta)
+    assert tracker.album_title == "faixa (BnSIi8je)"
+    assert tracker.total_files == 30
+
+    # 2. Start file transfer
+    tracker.start(r"C:\downloads\gallery-dl\bunkr\faixa (BnSIi8je)\eromedia.app_video_1791562031346_zy5vbq0g3ec.mp4")
+    tracker.progress(52000000, 26000000, 40000000)
+
+    # The latest progress object should have:
+    # Row 1 Title: faixa (BnSIi8je)
+    # Row 2 Active file: eromedia.app_video_1791562031346_zy5vbq0g3ec.mp4
+    last_prog = captured[-1]
+    assert last_prog.current_file == "faixa (BnSIi8je)"
+    assert last_prog.status_message == "eromedia.app_video_1791562031346_zy5vbq0g3ec.mp4"
+    assert last_prog.total_files == 30
+
+
+
 
 
 

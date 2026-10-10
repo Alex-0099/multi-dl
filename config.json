@@ -1,5 +1,5 @@
 {
-    "version": "4.3.0",
+    "version": "4.4.0",
     "general": {
         "download_dir": "downloads",
         "concurrent_downloads": 3,
@@ -9,10 +9,11 @@
         "retry_failed_attempts": 3
     },
     "archive": {
-        "enabled": false,
+        "enabled": true,
         "db_path": "data/archive.db",
-        "dedup_by_url": false,
-        "dedup_by_hash": false
+        "dedup_by_url": true,
+        "dedup_by_hash": false,
+        "verify_file_exists": true
     },
     "yt_dlp": {
         "format": "bestvideo*+bestaudio/best",

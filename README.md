@@ -2,12 +2,13 @@
 
 > A modern, unified multi-platform downloader orchestrating [`yt-dlp`](https://github.com/yt-dlp/yt-dlp), [`gallery-dl`](https://github.com/mikf/gallery-dl), [`terabox-dl`](https://github.com/Alex-0099/Terabox-DL), [`telegram-dl`](https://github.com/Alex-0099/Telegram-dl), and [`cyberdrop-dl`](https://github.com/Cyberdrop-DL/cyberdrop-dl) with isolated configurations, shared SQLite deduplication archive, persistent priority queue, two-way automatic failover, and interactive terminal interface.
 
-**Current Version:** `v4.3.0`
+**Current Version:** `v4.4.0`
 
 ---
 
 ## 📋 Changelog
 
+* **v4.4.0 (Unified Deduplication Archive & Container-Aware Smart Skipping)**: Central SQLite archive (`data/archive.db`), multi-tier container intelligence (skipping single media in 1ms while delegating playlists/bookmarks/albums to granular per-category item archives), `multi-dl archive` CLI management (`--list`, `--search`, `--remove`, `--clear`), `--force` and `--no-archive` flags, and native PowerShell runner (`multi-dl.ps1`).
 * **v4.3.0 (Concurrent Multi-Engine Queue & Dispatcher)**: Fast pre-routing ingestion, intelligent per-engine concurrency guards (Telegram max 1, yt-dlp max 2), atomic multi-stream progress canvas, retry handling, and consolidated batch summary reports.
 * **v4.x.x (`cyberdrop-dl`)**: Subprocess engine integration for file lockers & forums, live SQLite progress tracking, directory hierarchy normalization, existing-file skip detection, and bidirectional failover.
 * **v3.x.x (`telegram-dl`)**: Native Telethon client for public/private Telegram channels & chats, interactive CLI authentication wizard (`multi-dl auth`), and engine auto-updater (`multi-dl -U`).
@@ -72,10 +73,15 @@
 ## 💻 CLI Usage
 
 ### 1. Direct Downloads
-Simply pass the URL directly:
+Pass URLs directly using the native PowerShell runner `.\multi-dl` or `python multi-dl.py`:
 ```powershell
+# PowerShell launcher (runs directly in active console using project .venv):
+.\multi-dl "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+.\multi-dl "https://nhentai.net/g/649681/"
+.\multi-dl "https://bunkr.cr/a/MYwOPfwS"
+
+# Or standard python invocation:
 python multi-dl.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-python multi-dl.py "https://imgur.com/a/sample_album"
 python multi-dl.py "https://terabox.com/s/1abcdef..."
 python multi-dl.py "https://t.me/channel_name/123"
 ```
@@ -176,13 +182,31 @@ python multi-dl.py "https://terabox.com/s/..." --ndus "YOUR_NDUS_COOKIE"
 python multi-dl.py "https://www.youtube.com/watch?v=..." -f "bestvideo*+bestaudio/best"
 ```
 
-### 10. Inspect SQLite Download Archive
+### 10. Inspect & Manage SQLite Download Archive
 ```powershell
-# View archive metrics and statistics:
-python multi-dl.py archive --stats
+# View archive metrics and recent downloads:
+.\multi-dl archive
+# or
+.\multi-dl archive --stats
 
-# Search download history by keyword:
-python multi-dl.py archive --search "search_term"
+# List recent download records table:
+.\multi-dl archive --list
+.\multi-dl archive --list --limit 50
+
+# Search download history by title, filename, or URL:
+.\multi-dl archive --search "search_term"
+
+# Remove an entry by URL or ID (allowing it to be re-downloaded):
+.\multi-dl archive --remove "https://example.com/video"
+
+# Clear entire download archive (prompts for confirmation):
+.\multi-dl archive --clear
+
+# Force re-download even if already recorded in archive or present on disk:
+.\multi-dl "https://example.com/video" --force
+
+# Run download without checking or writing to archive:
+.\multi-dl "https://example.com/video" --no-archive
 ```
 
 ### 11. Test URL Routing

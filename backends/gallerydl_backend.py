@@ -109,7 +109,7 @@ class _GalleryDlBatchTracker:
         extra = sum(1 for ch in clean if ord(ch) > 0x1F000 or ch in "🖼📥📦🎬📁🚀⚠️❌✅•")
         return len(clean) + extra
 
-    def on_directory(self, kwdict: Dict[str, Any]) -> None:
+    def on_directory(self, kwdict: Dict[str, Any], folder_name: Optional[str] = None) -> None:
         """Called when gallery metadata is resolved before downloads begin."""
         album_meta = kwdict.get("album") if isinstance(kwdict.get("album"), dict) else {}
         count = kwdict.get("count") or kwdict.get("total") or album_meta.get("count") or album_meta.get("file_count")
@@ -119,7 +119,33 @@ class _GalleryDlBatchTracker:
             except (ValueError, TypeError):
                 pass
 
-        title = kwdict.get("title") or album_meta.get("title")
+        # 1. Direct folder_name passed from job.pathfmt.directory
+        title = None
+        if folder_name and folder_name.lower() not in ("downloads", "gallery-dl", "bunkr", "misc", "tmp", ""):
+            title = folder_name
+
+        # 2. Bunkr / Lolisafe album format: {album_name} ({album_id}) or {album_name}
+        if not title:
+            album_name = kwdict.get("album_name") or album_meta.get("album_name")
+            album_id = kwdict.get("album_id") or album_meta.get("album_id")
+            if album_name and album_id:
+                title = f"{album_name} ({album_id})"
+            elif album_name:
+                title = str(album_name)
+            elif album_id:
+                title = f"Album ({album_id})"
+
+        # 3. Standard title keys across all gallery-dl extractors
+        if not title:
+            title = (
+                kwdict.get("title")
+                or kwdict.get("album_title")
+                or kwdict.get("gallery_title")
+                or kwdict.get("thread_title")
+                or album_meta.get("title")
+                or album_meta.get("name")
+            )
+
         if title:
             self.album_title = str(title)
         if title and not self.title_announced:
@@ -152,6 +178,26 @@ class _GalleryDlBatchTracker:
                 except (ValueError, TypeError):
                     pass
 
+        # If album title is not yet resolved, try extracting from the file's kwdict
+        if not self.album_title:
+            album_meta = kwdict.get("album") if isinstance(kwdict.get("album"), dict) else {}
+            album_name = kwdict.get("album_name") or album_meta.get("album_name")
+            album_id = kwdict.get("album_id") or album_meta.get("album_id")
+            if album_name and album_id:
+                self.album_title = f"{album_name} ({album_id})"
+            elif album_name:
+                self.album_title = str(album_name)
+            else:
+                title = (
+                    kwdict.get("title")
+                    or kwdict.get("album_title")
+                    or kwdict.get("gallery_title")
+                    or kwdict.get("thread_title")
+                    or album_meta.get("title")
+                )
+                if title:
+                    self.album_title = str(title)
+
         fname = kwdict.get("filename")
         if fname:
             self.current_filename = str(fname)
@@ -170,9 +216,13 @@ class _GalleryDlBatchTracker:
 
     def start(self, path: str) -> None:
         """Called when download starts for a specific file."""
-        self.current_filename = Path(path).name
+        p = Path(path)
+        self.current_filename = p.name
         self.current_downloaded = 0
         self.current_total = None
+        # Derive album title from parent folder if not set or generic
+        if not self.album_title and p.parent.name and p.parent.name.lower() not in ("downloads", "gallery-dl", "bunkr", "misc", "tmp", ""):
+            self.album_title = p.parent.name
         if not self.quiet:
             self._render()
 
@@ -404,19 +454,25 @@ class _MultiDlGalleryJob(job.DownloadJob):
             self.out = self.tracker
 
     def handle_directory(self, kwdict: Dict[str, Any]):
+        res = super().handle_directory(kwdict)
         if self.tracker and hasattr(self.tracker, "on_directory"):
-            self.tracker.on_directory(kwdict)
-        return super().handle_directory(kwdict)
+            folder_name = None
+            if getattr(self, "pathfmt", None) and getattr(self.pathfmt, "directory", None):
+                folder_name = Path(self.pathfmt.directory).name
+            self.tracker.on_directory(kwdict, folder_name=folder_name)
+        return res
 
     def handle_url(self, url: str, kwdict: Dict[str, Any]):
         if self.tracker and hasattr(self.tracker, "on_url"):
             self.tracker.on_url(url, kwdict)
         return super().handle_url(url, kwdict)
 
-    def on_directory(self, kwdict: Dict[str, Any]):
+    def on_directory(self, kwdict: Dict[str, Any], folder_name: Optional[str] = None):
         """Fallback in case gallery-dl calls on_directory directly on the job."""
         if self.tracker and hasattr(self.tracker, "on_directory"):
-            self.tracker.on_directory(kwdict)
+            if not folder_name and getattr(self, "pathfmt", None) and getattr(self.pathfmt, "directory", None):
+                folder_name = Path(self.pathfmt.directory).name
+            self.tracker.on_directory(kwdict, folder_name=folder_name)
 
     def on_url(self, url: str, kwdict: Dict[str, Any]):
         """Fallback in case gallery-dl calls on_url directly on the job."""
@@ -449,7 +505,7 @@ class GalleryDlBackend(BaseBackend):
         super().__init__(config)
         self.pre_initialize()
 
-    def _configure_job(self, out_dir: Optional[Path] = None, disable_archive: bool = True, quiet: bool = False) -> None:
+    def _configure_job(self, out_dir: Optional[Path] = None, disable_archive: bool = False, quiet: bool = False) -> None:
         """Loads configuration from the project's config file safely without wiping active worker memory."""
         with self._config_lock:
             if not GalleryDlBackend._configured:
@@ -471,13 +527,17 @@ class GalleryDlBackend(BaseBackend):
                 gdl_config.set(("downloader", "ytdl"), "progress", 0.1)
                 gdl_config.set(("output",), "shorten", False)
 
-                # Pause gallery-dl internal sqlite archives during test mode if requested
-                if disable_archive:
-                    gdl_config.set(("extractor",), "archive", None)
-
                 # Disable netrc lookups to prevent unwanted 'No authentication info' warnings
                 gdl_config.set((), "netrc", False)
                 GalleryDlBackend._configured = True
+
+            # Dynamic archive configuration based on task options and global setting
+            if disable_archive:
+                gdl_config.set(("extractor",), "archive", None)
+            else:
+                Path("data/archives").mkdir(parents=True, exist_ok=True)
+                if not gdl_config.get(("extractor",), "archive"):
+                    gdl_config.set(("extractor",), "archive", ["data", "archives", "{category}.sqlite3"])
 
             # Enforce MULTI_DOWNLOADER output directory override
             if out_dir:
@@ -564,7 +624,8 @@ class GalleryDlBackend(BaseBackend):
 
         def _run_download() -> int:
             nonlocal tracker
-            self._configure_job(out_dir=out_dir, quiet=quiet)
+            disable_archive = bool(task.options.get("no_archive") or task.options.get("force"))
+            self._configure_job(out_dir=out_dir, disable_archive=disable_archive, quiet=quiet)
 
             tracker = _GalleryDlBatchTracker(progress_callback=progress_callback, quiet=quiet)
             _active_trackers.current = tracker

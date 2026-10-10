@@ -55,6 +55,25 @@ class QueueDispatcher:
         opts["quiet"] = True
         opts["concurrent"] = True
 
+        # Central archive deduplication check (for single media items)
+        archive_enabled = getattr(self.config, "archive_enabled", None)
+        if archive_enabled is None:
+            archive_enabled = bool(self.config.get("archive", "enabled", True))
+        dedup_by_url = bool(self.config.get("archive", "dedup_by_url", True))
+        force_download = bool(opts.get("force") or opts.get("no_archive"))
+        is_container = URLRouter.is_container_url(item.url, item.backend)
+
+        if archive_enabled and dedup_by_url and not force_download and not is_container:
+            existing_entry = self.archive.get_by_url(item.url, item.backend)
+            if existing_entry:
+                verify_exists = bool(self.config.get("archive", "verify_file_exists", True))
+                file_on_disk = Path(existing_entry.file_path).exists()
+                if not verify_exists or file_on_disk:
+                    clean_display = existing_entry.file_name or Path(existing_entry.file_path).name
+                    self.queue_manager.mark_status(item.id, TaskStatus.SKIPPED)
+                    multi_bar.finish_slot(slot_id, f"~{clean_display}", status_type="skipped")
+                    return True, True, 0, None, clean_display
+
         task = DownloadTask(
             url=item.url,
             backend=item.backend or "auto",
@@ -99,13 +118,12 @@ class QueueDispatcher:
             multi_bar.finish_slot(slot_id, clean_display_path, status_type="completed")
 
             # Record into SQLite deduplication archive if enabled
-            archive_enabled = getattr(self.config, "archive_enabled", None)
-            if archive_enabled is None:
-                archive_enabled = bool(self.config.get("archive", "enabled", True))
-
-            if archive_enabled:
-                entry.file_hash = ArchiveManager.calculate_file_hash(Path(entry.file_path))
-                self.archive.add_entry(entry)
+            if archive_enabled and not opts.get("no_archive"):
+                try:
+                    entry.file_hash = ArchiveManager.calculate_file_hash(Path(entry.file_path))
+                    self.archive.add_entry(entry, upsert=True)
+                except Exception:
+                    pass
 
             file_size = entry.file_size or 0
             if not file_size and Path(entry.file_path).exists():

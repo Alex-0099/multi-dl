@@ -507,6 +507,17 @@ class CyberdropDlBackend(BaseBackend):
                     elif completed_files:
                         active_name = max(completed_files, key=lambda f: f.stat().st_mtime).name
 
+                    # Detect album folder title if files are placed in an album subfolder
+                    if not progress_active.get("album_title"):
+                        sample_files = part_files or completed_files
+                        if sample_files:
+                            try:
+                                rel_parts = sample_files[0].relative_to(out_dir).parts
+                                if len(rel_parts) > 1 and not rel_parts[0].startswith("Loose Files"):
+                                    progress_active["album_title"] = rel_parts[0]
+                            except Exception:
+                                pass
+
                     now = time.time()
                     dt = now - last_time
                     if dt >= 0.25:
@@ -556,9 +567,10 @@ class CyberdropDlBackend(BaseBackend):
                                 speed_bytes_sec=avg_speed,
                                 eta_seconds=eta,
                                 percent=pct,
-                                current_file=active_name,
+                                current_file=progress_active.get("album_title") or active_name,
                                 total_files=total_cnt,
                                 file_index=current_file_index,
+                                status_message=active_name,
                             )
                             progress_callback(prog)
                 except Exception:

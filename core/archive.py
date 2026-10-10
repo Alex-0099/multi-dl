@@ -93,34 +93,129 @@ class ArchiveManager:
                 return self._row_to_entry(row)
         return None
 
-    def add_entry(self, entry: ArchiveEntry) -> None:
-        """Saves a new download record to the archive."""
+    def get_by_url(self, url: str, backend: Optional[str] = None) -> Optional[ArchiveEntry]:
+        """Look up an existing archive entry by URL and optional backend."""
+        with self._get_connection() as conn:
+            if backend:
+                cursor = conn.execute(
+                    "SELECT * FROM downloads WHERE url = ? AND backend = ? LIMIT 1",
+                    (url, backend)
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT * FROM downloads WHERE url = ? ORDER BY downloaded_at DESC LIMIT 1",
+                    (url,)
+                )
+            row = cursor.fetchone()
+            if row:
+                return self._row_to_entry(row)
+        return None
+
+    def add_entry(self, entry: ArchiveEntry, upsert: bool = True) -> None:
+        """Saves a new download record to the archive with optional upsert."""
         with self._get_connection() as conn:
             try:
-                conn.execute(
-                    """
-                    INSERT INTO downloads (
-                        id, url, file_path, file_name, file_hash, file_size,
-                        backend, source_site, media_type, metadata_json, downloaded_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        entry.id or str(uuid.uuid4()),
-                        entry.url,
-                        entry.file_path,
-                        entry.file_name,
-                        entry.file_hash,
-                        entry.file_size,
-                        entry.backend,
-                        entry.source_site,
-                        entry.media_type.value if hasattr(entry.media_type, "value") else str(entry.media_type),
-                        json.dumps(entry.metadata or {}),
-                        entry.downloaded_at.isoformat() if entry.downloaded_at else datetime.now(timezone.utc).isoformat(),
+                if upsert:
+                    conn.execute(
+                        """
+                        INSERT INTO downloads (
+                            id, url, file_path, file_name, file_hash, file_size,
+                            backend, source_site, media_type, metadata_json, downloaded_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(url, backend) DO UPDATE SET
+                            file_path = excluded.file_path,
+                            file_name = excluded.file_name,
+                            file_hash = excluded.file_hash,
+                            file_size = excluded.file_size,
+                            source_site = excluded.source_site,
+                            media_type = excluded.media_type,
+                            metadata_json = excluded.metadata_json,
+                            downloaded_at = excluded.downloaded_at
+                        """,
+                        (
+                            entry.id or str(uuid.uuid4()),
+                            entry.url,
+                            entry.file_path,
+                            entry.file_name,
+                            entry.file_hash,
+                            entry.file_size,
+                            entry.backend,
+                            entry.source_site,
+                            entry.media_type.value if hasattr(entry.media_type, "value") else str(entry.media_type),
+                            json.dumps(entry.metadata or {}),
+                            entry.downloaded_at.isoformat() if entry.downloaded_at else datetime.now(timezone.utc).isoformat(),
+                        )
                     )
-                )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO downloads (
+                            id, url, file_path, file_name, file_hash, file_size,
+                            backend, source_site, media_type, metadata_json, downloaded_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            entry.id or str(uuid.uuid4()),
+                            entry.url,
+                            entry.file_path,
+                            entry.file_name,
+                            entry.file_hash,
+                            entry.file_size,
+                            entry.backend,
+                            entry.source_site,
+                            entry.media_type.value if hasattr(entry.media_type, "value") else str(entry.media_type),
+                            json.dumps(entry.metadata or {}),
+                            entry.downloaded_at.isoformat() if entry.downloaded_at else datetime.now(timezone.utc).isoformat(),
+                        )
+                    )
                 conn.commit()
             except sqlite3.IntegrityError as e:
                 raise ArchiveDuplicateError(f"Entry already exists in archive: {e}")
+
+    def delete_by_url(self, url: str, backend: Optional[str] = None) -> bool:
+        """Deletes a download record by URL. Returns True if a record was removed."""
+        with self._get_connection() as conn:
+            if backend:
+                cursor = conn.execute(
+                    "DELETE FROM downloads WHERE url = ? AND backend = ?",
+                    (url, backend)
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM downloads WHERE url = ?",
+                    (url,)
+                )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def delete_by_id(self, entry_id: str) -> bool:
+        """Deletes a download record by its unique ID. Returns True if removed."""
+        with self._get_connection() as conn:
+            cursor = conn.execute("DELETE FROM downloads WHERE id = ?", (entry_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def list_recent(self, limit: int = 50, backend: Optional[str] = None) -> List[ArchiveEntry]:
+        """Returns the most recent download records from the archive."""
+        with self._get_connection() as conn:
+            if backend:
+                cursor = conn.execute(
+                    "SELECT * FROM downloads WHERE backend = ? ORDER BY downloaded_at DESC LIMIT ?",
+                    (backend, limit)
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT * FROM downloads ORDER BY downloaded_at DESC LIMIT ?",
+                    (limit,)
+                )
+            return [self._row_to_entry(row) for row in cursor.fetchall()]
+
+    def clear_archive(self) -> int:
+        """Removes all download records from the archive. Returns count deleted."""
+        with self._get_connection() as conn:
+            cursor = conn.execute("DELETE FROM downloads")
+            conn.commit()
+            return cursor.rowcount
 
     def search(self, query: str, backend: Optional[str] = None) -> List[ArchiveEntry]:
         """Search downloads by filename or URL."""

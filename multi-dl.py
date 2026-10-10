@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-__version__ = "4.3.0"
+__version__ = "4.4.0"
 
 from core.terminal import Style
 
@@ -53,7 +53,7 @@ from core.archive import ArchiveManager
 from core.config import ConfigManager
 from core.dispatcher import QueueDispatcher
 from core.exceptions import MultiDLError
-from core.models import DownloadProgress, DownloadTask, TaskStatus
+from core.models import ArchiveEntry, DownloadProgress, DownloadTask, TaskStatus
 from core.queue_manager import QueueManager
 from core.router import URLRouter
 from core.updater import EngineUpdater
@@ -189,6 +189,31 @@ def print_queue_list(queue_mgr: QueueManager, status_filter: Optional[str] = Non
             info = info[:avail - 3] + "..."
 
         print(f"  {Style.dim(item.id):<9} {item.priority:>4}   {eng_badge:<20} {status_tag} {Style.white(info)}")
+    print(f"  {'─' * (max_w - 4)}\n")
+
+
+def _print_archive_table(entries: List[ArchiveEntry]) -> None:
+    """Renders a formatted table of download records from the archive."""
+    term_width = shutil.get_terminal_size((80, 24)).columns
+    max_w = min(110, max(60, term_width - 2))
+
+    def _pad_v(txt: str, width: int) -> str:
+        clean_len = len(re.sub(r'\033\[[0-9;]*[a-zA-Z]', '', txt))
+        return txt + (" " * max(0, width - clean_len))
+
+    print(f"  {Style.dim('Date')}        {Style.dim('Engine')}         {Style.dim('Size')}       {Style.dim('Filename / URL')}")
+    print(f"  {'─' * (max_w - 4)}")
+    for r in entries:
+        dt_str = r.downloaded_at.strftime("%Y-%m-%d") if r.downloaded_at else "----/--/--"
+        eng_badge = Style.engine_badge(r.backend)
+        sz_str = format_bytes(r.file_size) if r.file_size else "-- MB"
+        name_or_url = r.file_name or r.url
+        avail = max_w - 44
+        if len(name_or_url) > avail:
+            name_or_url = name_or_url[:avail - 3] + "..."
+        badge_padded = _pad_v(eng_badge, 15)
+        sz_padded = _pad_v(sz_str, 11)
+        print(f"  {Style.dim(dt_str)}  {badge_padded} {Style.white(sz_padded)} {Style.white(name_or_url)}")
     print(f"  {'─' * (max_w - 4)}\n")
 
 
@@ -367,6 +392,8 @@ def main():
         direct_parser.add_argument("--cookies-from-browser", help="Load cookies from browser (e.g. chrome, firefox, edge, brave, opera)")
         direct_parser.add_argument("--cookies", help="Path to cookies.txt file")
         direct_parser.add_argument("--ndus", help="TeraBox ndus session cookie")
+        direct_parser.add_argument("--force", action="store_true", help="Force re-download even if already in archive or on disk")
+        direct_parser.add_argument("--no-archive", action="store_true", help="Do not check or record download in the archive")
         parsed_direct = direct_parser.parse_args(raw_args)
 
         raw_inputs = list(parsed_direct.urls or [])
@@ -398,6 +425,10 @@ def main():
             opts["format"] = format_val
         if parsed_direct.ndus:
             opts["ndus"] = parsed_direct.ndus
+        if parsed_direct.force:
+            opts["force"] = True
+        if parsed_direct.no_archive:
+            opts["no_archive"] = True
 
         # Single direct URL mode
         if len(extracted_urls) == 1 and not source_files and not parsed_direct.concurrency:
@@ -460,6 +491,10 @@ def main():
     arc_parser = subparsers.add_parser("archive", help="Inspect download archive")
     arc_parser.add_argument("--stats", action="store_true", help="Show summary metrics")
     arc_parser.add_argument("--search", "-s", help="Search history by keyword")
+    arc_parser.add_argument("--list", "-l", action="store_true", help="List recent download records")
+    arc_parser.add_argument("--limit", type=int, default=20, help="Max entries to display (default: 20)")
+    arc_parser.add_argument("--remove", help="Remove an entry by URL or ID from the archive")
+    arc_parser.add_argument("--clear", action="store_true", help="Clear all records from the archive")
 
     # 'route' command (test routing)
     route_parser = subparsers.add_parser("route", help="Test URL routing")
@@ -557,19 +592,50 @@ def main():
     elif args.command == "archive":
         config = ConfigManager()
         archive = ArchiveManager(config.archive_db_path)
-        if args.stats:
+        if getattr(args, "clear", False):
+            confirm = input(f"{Style.tag('⚠️', 'CLEAR ARCHIVE', Style.YELLOW)} Are you sure you want to clear the entire archive? (y/N): ").strip().lower()
+            if confirm in ("y", "yes"):
+                deleted = archive.clear_archive()
+                print(f"{Style.tag('✅', 'ARCHIVE', Style.GREEN)} Cleared {deleted} download records from {config.archive_db_path}")
+            else:
+                print(f"{Style.tag('ℹ️', 'ARCHIVE', Style.DIM)} Operation cancelled.")
+        elif getattr(args, "remove", None):
+            target = args.remove
+            removed = archive.delete_by_url(target) or archive.delete_by_id(target)
+            if removed:
+                print(f"{Style.tag('✅', 'REMOVED', Style.GREEN)} Removed record: {Style.white(target)}")
+            else:
+                print(f"{Style.tag('⚠️', 'NOT FOUND', Style.YELLOW)} No matching entry found for: {target}")
+        elif getattr(args, "search", None):
+            results = archive.search(args.search)
+            if not results:
+                print(f"\n{Style.tag('🔍', 'SEARCH', Style.CYAN)} No records found matching: {Style.bold(args.search)}")
+            else:
+                print(f"\n{Style.tag('🔍', 'SEARCH', Style.CYAN)} Found {Style.cyan(str(len(results)))} matches for '{Style.bold(args.search)}':\n")
+                _print_archive_table(results[:args.limit or 20])
+        elif getattr(args, "list", False):
+            recent = archive.list_recent(limit=args.limit or 20)
+            if not recent:
+                print(f"\n{Style.tag('📁', 'ARCHIVE', Style.CYAN)} Download archive is currently empty.")
+            else:
+                print(f"\n{Style.tag('📁', 'ARCHIVE', Style.CYAN)} {Style.bold(f'Recent Downloads (Last {len(recent)})')}:\n")
+                _print_archive_table(recent)
+        else:
+            # Default or --stats: display stats and recent entries
             stats = archive.get_stats()
             print(f"\n{Style.tag('📊', 'STATS', Style.CYAN)} {Style.bold('Download Archive Summary')}")
+            print(f"  • Database:        {Style.white(str(config.archive_db_path))}")
             print(f"  • Total Downloads: {Style.green(str(stats['total_count']))}")
             print(f"  • Total Size:      {Style.green(format_bytes(stats['total_bytes']))}")
             print(f"  • By Backend:")
             for b, cnt in stats["by_backend"].items():
                 print(f"    - {Style.engine_badge(b)}: {Style.white(str(cnt))}")
-        elif args.search:
-            results = archive.search(args.search)
-            print(f"\nFound {Style.cyan(str(len(results)))} matches:")
-            for r in results:
-                print(f"  {Style.tag('📁', r.backend, Style.engine_color(r.backend))} {Style.white(r.file_name)} {Style.dim(f'({r.url})')}")
+            recent = archive.list_recent(limit=5)
+            if recent:
+                print(f"\n{Style.dim('Recent Entries:')}")
+                _print_archive_table(recent)
+            else:
+                print()
     elif args.command in ("auth", "login"):
         target = (getattr(args, "engine", "all") or "all").lower()
         config = ConfigManager()

@@ -435,7 +435,9 @@ class MultiBarManager:
                 slot.file_index = None
                 slot.total_files = None
                 slot.status_message = None
-        self.render(force=True)
+        # Only render if the queue is empty and slots are genuinely retiring
+        if self._remaining <= self.max_slots:
+            self.render()
 
     def render(self, force: bool = False) -> None:
         """Atomically renders header, unified 2-line cards (Drawing-1.sketchpad.png), and footer."""
@@ -457,14 +459,28 @@ class MultiBarManager:
             active_slots = [s for s in self._slots.values() if s.status == "active"]
             active_count = len(active_slots)
 
-            # When downloads complete, free slots with no links to process disappear
-            # from the Terminal, keeping the display clean with only current work.
-            if active_slots:
-                slots_to_print = active_slots
-            elif self._remaining > 0:
-                slots_to_print = [self._slots[1]]
+            # Determine target slot count:
+            # - If queue has items remaining, display up to max_slots
+            # - When total remaining items in batch drops below max_slots, shrink to remaining
+            # - When remaining is 0, only display lingering active slots
+            if self._remaining > 0:
+                target_count = min(self.max_slots, max(active_count, self._remaining))
+            else:
+                target_count = active_count
+
+            # Collect slots to render (active slots first, then transitioning idle slots up to target_count)
+            if target_count == 0:
+                slots_to_print = []
             else:
                 slots_to_print = []
+                for s in self._slots.values():
+                    if s.status == "active":
+                        slots_to_print.append(s)
+                for s in self._slots.values():
+                    if len(slots_to_print) >= target_count:
+                        break
+                    if s not in slots_to_print:
+                        slots_to_print.append(s)
 
             if not slots_to_print and self._lines_printed == 0:
                 return
@@ -508,7 +524,7 @@ class MultiBarManager:
                 elif slot.status == "active":
                     line1 = f"{line1_prefix}{Style.dim('downloading...')}"
                 else:
-                    line1 = f"{line1_prefix}{Style.dim('idle')}"
+                    line1 = f"{line1_prefix}{Style.dim('connecting...')}"
 
                 # Line 2: [━━━━━━━━━━━━━━] 50.0% • 14/28 • 26.0/52.0 MB • @ 4.2 MB/s • [verbose / current file]
                 eng_color = Style.engine_color(slot.backend) if slot.status == "active" else Style.CYAN
@@ -550,7 +566,7 @@ class MultiBarManager:
                     files_str = "--/--"
                     bytes_str = "--/-- MB"
                     speed_str = f"{Style.dim('@ --/s')}"
-                    verbose_raw = "[idle]"
+                    verbose_raw = "[connecting...]"
 
                 base_line2 = (
                     f"{bar} {pct_colored}{sep}"
@@ -601,12 +617,9 @@ class MultiBarManager:
                 safe_terminal_write(f"\r\033[K{line}\n")
                 printed_count += 1
 
-            # If canvas shrank, clear any extra trailing lines from the previous frame
+            # If canvas shrank, clear any extra trailing lines from the previous frame using \033[J (no scrolling)
             if self._lines_printed > printed_count:
-                extra_lines = self._lines_printed - printed_count
-                for _ in range(extra_lines):
-                    safe_terminal_write("\r\033[K\n")
-                safe_terminal_write(f"\033[{extra_lines}A")
+                safe_terminal_write("\033[J")
 
             try:
                 sys.stdout.flush()
@@ -619,10 +632,7 @@ class MultiBarManager:
         """Cleans up visual canvas at the end of the batch run."""
         with self._lock:
             if self.is_tty and self._lines_printed > 0:
-                safe_terminal_write(f"\033[{self._lines_printed}A")
-                for _ in range(self._lines_printed):
-                    safe_terminal_write("\r\033[K\n")
-                safe_terminal_write(f"\033[{self._lines_printed}A")
+                safe_terminal_write(f"\033[{self._lines_printed}A\r\033[J")
                 try:
                     sys.stdout.flush()
                 except Exception:
