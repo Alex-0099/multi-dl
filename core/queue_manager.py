@@ -8,10 +8,24 @@ from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import urllib.parse
 import uuid
 
 from core.models import QueueItem, TaskStatus
 from core.router import URLRouter
+
+
+def extract_url_domain(url: str) -> str:
+    """Extracts lowercased hostname/domain from a URL."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        return (parsed.netloc or "").lower().split(":")[0]
+    except Exception:
+        return ""
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_QUEUE_FILE = PROJECT_ROOT / "data" / "queue.json"
 
 
 class QueueManager:
@@ -20,10 +34,17 @@ class QueueManager:
     DEFAULT_ENGINE_LIMITS = {
         "telegram-dl": 1,  # Prevent SQLite session file lock collisions
         "yt-dlp": 2,        # Cap concurrent FFmpeg muxing jobs
+        "gallery-dl": 4,
+        "terabox-dl": 2,
+        "cyberdrop-dl": 2,
     }
 
     def __init__(self, queue_file: Optional[Path] = None):
-        self.queue_file = queue_file or Path("data/queue.json")
+        if queue_file is not None:
+            p = Path(queue_file)
+            self.queue_file = p if p.is_absolute() else (PROJECT_ROOT / p)
+        else:
+            self.queue_file = DEFAULT_QUEUE_FILE
         self._items: Dict[str, QueueItem] = {}
         self.load()
 
@@ -94,12 +115,13 @@ class QueueManager:
         self,
         active_engine_counts: Dict[str, int],
         engine_limits: Optional[Dict[str, int]] = None,
+        active_domain_counts: Optional[Dict[str, int]] = None,
+        max_per_domain: Optional[int] = None,
     ) -> Optional[QueueItem]:
         """
-        Fetches the highest-priority pending task whose backend engine is not saturated.
-        If an engine limit is reached (e.g. 1 active Telegram download), it gracefully
-        skips ahead to other pending engine items (e.g. yt-dlp or gallery-dl) to prevent
-        pipeline starvation.
+        Fetches the highest-priority pending task whose backend engine is not saturated
+        and whose domain has not exceeded max_per_domain.
+        If an engine or domain limit is reached, gracefully skips ahead to other pending items.
         """
         limits = dict(self.DEFAULT_ENGINE_LIMITS)
         if engine_limits:
@@ -117,11 +139,22 @@ class QueueManager:
 
         for candidate in queued_items:
             engine_name = candidate.backend or "unknown"
+            engine_key = engine_name.replace("_", "-")
             active_count = active_engine_counts.get(engine_name, 0)
-            max_allowed = limits.get(engine_name, 999)
+            if engine_key in active_engine_counts:
+                active_count = max(active_count, active_engine_counts[engine_key])
+            max_allowed = limits.get(engine_key, limits.get(engine_name, 999))
 
-            if active_count < max_allowed:
-                return candidate
+            if active_count >= max_allowed:
+                continue
+
+            # Domain rate-limiting check
+            if max_per_domain is not None and max_per_domain > 0 and active_domain_counts is not None:
+                domain = extract_url_domain(candidate.url)
+                if domain and active_domain_counts.get(domain, 0) >= max_per_domain:
+                    continue
+
+            return candidate
 
         return None
 
@@ -182,6 +215,17 @@ class QueueManager:
             1 for item in self._items.values()
             if item.status in (TaskStatus.QUEUED, TaskStatus.PENDING)
         )
+
+    def get_pending_items(self, limit: Optional[int] = None) -> List[QueueItem]:
+        """Returns ordered pending/queued items waiting to be dispatched."""
+        queued_items = [
+            item for item in self._items.values()
+            if item.status in (TaskStatus.QUEUED, TaskStatus.PENDING)
+        ]
+        queued_items.sort(key=lambda x: (-x.priority, x.added_at))
+        if limit is not None:
+            return queued_items[:limit]
+        return queued_items
 
     def stats(self) -> Dict[str, Any]:
         """Calculates current queue statistics grouped by status and backend."""

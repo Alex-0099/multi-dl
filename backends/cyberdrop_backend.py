@@ -20,7 +20,10 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import urllib.parse
+import urllib.request
 import uuid
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from backends.base import BaseBackend
 from core.exceptions import DownloadFailedError, EngineNotFoundError
@@ -178,7 +181,7 @@ class CyberdropDlBackend(BaseBackend):
         "saint.to", "sendvid.com", "streamtape.com", "jpg.church", "puter.com",
         "simpcity.su", "simpcity.to", "f95zone.to", "vipergirls.to", "mega.nz",
         "scrolller.com", "erome.com", "fapello.com", "postimg.cc", "pixl.is", "redgifs.com",
-        "imageban.ru", "imgbox.com", "ibb.co", "xbunker.cc"
+        "imageban.ru", "imgbox.com", "ibb.co", "xbunker.cc", "hotpic.cc", "hotpic2.cc", "2385290.xyz", "myhostdata.space"
     ]
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -265,6 +268,8 @@ class CyberdropDlBackend(BaseBackend):
             for d in self.supported_domains:
                 if domain == d or domain.endswith("." + d):
                     return True
+            if "hotpic" in domain:
+                return True
             return False
         except Exception:
             return False
@@ -426,13 +431,28 @@ class CyberdropDlBackend(BaseBackend):
 
         # Apply cookies if provided
         cookies = task.options.get("cookies") or self.config.get("cookies_file")
-        if cookies and Path(str(cookies)).exists():
-            cmd.extend(["--cookies", str(cookies)])
+        if cookies:
+            c_p = Path(str(cookies))
+            if not c_p.is_absolute():
+                c_p = PROJECT_ROOT / c_p
+            if c_p.exists():
+                cmd.extend(["--cookies", str(c_p.resolve())])
 
         # Apply proxy if provided
         proxy = task.options.get("proxy") or self.config.get("proxy")
         if proxy:
             cmd.extend(["--proxy", str(proxy)])
+
+        # Apply media type filter
+        audio_only = bool(task.options.get("audio_only") or task.options.get("extract_audio"))
+        video_only = bool(task.options.get("video_only"))
+        images_only = bool(task.options.get("images_only") or task.options.get("image_only"))
+        if images_only:
+            cmd.extend(["--include-image"])
+        elif video_only:
+            cmd.extend(["--include-video"])
+        elif audio_only:
+            cmd.extend(["--include-audio"])
 
         # Apply FlareSolverr if configured
         flaresolverr = self.config.get("flaresolverr")
@@ -561,6 +581,8 @@ class CyberdropDlBackend(BaseBackend):
                                 eta = int((total_b - cur_bytes) / avg_speed)
 
                         if progress_callback and (cur_bytes > 0 or part_files):
+                            from core.router import URLRouter
+                            cdl_host = URLRouter.get_host_identifier(task.url, self.name)
                             prog = DownloadProgress(
                                 downloaded_bytes=cur_bytes,
                                 total_bytes=total_b,
@@ -571,6 +593,8 @@ class CyberdropDlBackend(BaseBackend):
                                 total_files=total_cnt,
                                 file_index=current_file_index,
                                 status_message=active_name,
+                                extractor=cdl_host,
+                                container_title=progress_active.get("album_title"),
                             )
                             progress_callback(prog)
                 except Exception:
@@ -582,6 +606,7 @@ class CyberdropDlBackend(BaseBackend):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                cwd=str(PROJECT_ROOT),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=sub_env,

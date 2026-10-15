@@ -628,6 +628,22 @@ class TelegramDlBackend(BaseBackend):
                 if not msg.media:
                     raise DownloadFailedError(f"Telegram message {message_id} contains no downloadable media.")
 
+                audio_only = bool(task.options.get("audio_only") or task.options.get("extract_audio"))
+                video_only = bool(task.options.get("video_only"))
+                images_only = bool(task.options.get("images_only") or task.options.get("image_only"))
+
+                def _matches_filter(m_obj: Any) -> bool:
+                    if not m_obj or not m_obj.media:
+                        return False
+                    mtype = _get_media_type(m_obj)
+                    if audio_only and mtype != MediaType.AUDIO:
+                        return False
+                    if video_only and mtype != MediaType.VIDEO:
+                        return False
+                    if images_only and mtype != MediaType.IMAGE:
+                        return False
+                    return True
+
                 # Check if this message belongs to a multi-media album
                 messages_to_download = [msg]
                 if msg.grouped_id and self.config.get("auto_download_albums", True):
@@ -638,6 +654,12 @@ class TelegramDlBackend(BaseBackend):
                     album_siblings = [m for m in siblings if m and getattr(m, 'grouped_id', None) == msg.grouped_id and m.media]
                     if len(album_siblings) > 1:
                         messages_to_download = sorted(album_siblings, key=lambda m: m.id)
+
+                if audio_only or video_only or images_only:
+                    messages_to_download = [m for m in messages_to_download if _matches_filter(m)]
+                    if not messages_to_download:
+                        fname = "audio" if audio_only else ("video" if video_only else "images")
+                        raise DownloadFailedError(f"No {fname} media found in Telegram message {message_id}.")
 
                 total_items = len(messages_to_download)
                 total_bytes = sum(_get_file_size(m) for m in messages_to_download)
@@ -671,6 +693,9 @@ class TelegramDlBackend(BaseBackend):
                                 current_file=clean_chat_title if total_items > 1 else filename,
                                 file_index=idx,
                                 total_files=total_items,
+                                status_message=filename,
+                                extractor="telegram",
+                                container_title=chat_title,
                             )
                             prog.update_percent()
                             progress_callback(prog)
@@ -688,10 +713,16 @@ class TelegramDlBackend(BaseBackend):
             else:
                 print(f"{Style.tag('🎬', 'MEDIA', Style.YELLOW)} {Style.white(f'Scanning chat media in {chat_title}...')}")
 
+                audio_only = bool(task.options.get("audio_only") or task.options.get("extract_audio"))
+                video_only = bool(task.options.get("video_only"))
+                images_only = bool(task.options.get("images_only") or task.options.get("image_only"))
+
                 # Collect all media messages from chat history
                 media_messages: List[Any] = []
                 async for m in client.iter_messages(entity):
                     if m and m.media:
+                        if (audio_only or video_only or images_only) and not _matches_filter(m):
+                            continue
                         media_messages.append(m)
 
                 if not media_messages:
@@ -709,7 +740,23 @@ class TelegramDlBackend(BaseBackend):
                     f_size = _get_file_size(m)
 
                     def _prog_hook(received: int, total: int, speed: float, eta: Optional[int]):
-                        tracker.update_file(filename, received, total, speed, eta)
+                        if tracker:
+                            tracker.update_file(filename, received, total, speed, eta)
+                        if progress_callback:
+                            prog = DownloadProgress(
+                                downloaded_bytes=received,
+                                total_bytes=total,
+                                speed_bytes_sec=speed,
+                                eta_seconds=eta,
+                                current_file=clean_chat_title if total_items > 1 else filename,
+                                file_index=idx,
+                                total_files=total_items,
+                                status_message=filename,
+                                extractor="telegram",
+                                container_title=chat_title,
+                            )
+                            prog.update_percent()
+                            progress_callback(prog)
 
                     ok, final_p = await self._download_message_stream(client, m, target_file, progress_cb=_prog_hook)
                     if ok:

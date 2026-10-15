@@ -19,7 +19,11 @@ class ArchiveManager:
     """Manages cross-backend deduplication and download history in SQLite."""
 
     def __init__(self, db_path: Path):
-        self.db_path = db_path
+        p = Path(db_path)
+        if not p.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent
+            p = project_root / p
+        self.db_path = p
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:

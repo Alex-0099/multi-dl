@@ -38,6 +38,8 @@ class DownloadProgress:
     total_files: Optional[int] = None
     file_index: Optional[int] = None
     status_message: Optional[str] = None
+    extractor: Optional[str] = None
+    container_title: Optional[str] = None
 
     def update_percent(self) -> None:
         if self.total_bytes and self.total_bytes > 0:

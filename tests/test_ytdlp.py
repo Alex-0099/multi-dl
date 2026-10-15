@@ -55,3 +55,27 @@ async def test_ytdlp_download_and_archive(tmp_path):
         assert entry.backend == "yt-dlp"
     except Exception as e:
         pytest.skip(f"Network error during download test: {e}")
+
+
+def test_ytdlp_waf_error_detection():
+    assert YtDlpBackend._is_waf_or_tls_error("ConnectionResetError: [WinError 10054] An existing connection was forcibly closed") is True
+    assert YtDlpBackend._is_waf_or_tls_error("Unable to download JSON metadata: Connection aborted") is True
+    assert YtDlpBackend._is_waf_or_tls_error("Cloudflare challenge requested") is True
+    assert YtDlpBackend._is_waf_or_tls_error("Normal video format not found") is False
+
+
+def test_ytdlp_impersonate_target_resolution():
+    target = YtDlpBackend._resolve_impersonate_target("chrome")
+    assert target is not None
+    assert str(target).lower().startswith("chrome")
+
+    target_ff = YtDlpBackend._resolve_impersonate_target("firefox")
+    assert target_ff is not None
+    assert str(target_ff).lower().startswith("firefox")
+
+    assert YtDlpBackend._resolve_impersonate_target(None) is None
+
+
+def test_ytdlp_cam4_can_handle():
+    backend = YtDlpBackend()
+    assert backend.can_handle("https://www.cam4.com/corierando") is True

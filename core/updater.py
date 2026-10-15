@@ -250,12 +250,8 @@ class EngineUpdater:
         return self._update_or_clone_git_repo("Terabox-dl", repo_url, candidate_paths)
 
     def update_cyberdropdl(self) -> Tuple[bool, str]:
-        """Updates cyberdrop-dl if installed (via pip in .venv or standalone binary)."""
-        # 1. Check if installed in current Python environment via pip
-        if self._get_pkg_version("cyberdrop-dl"):
-            return self._pip_upgrade("cyberdrop-dl", "cyberdrop-dl")
-
-        # 2. Check for standalone binary (PATH, ~/.local/bin, etc.)
+        """Updates cyberdrop-dl if installed (standalone binary or via pip in .venv)."""
+        # 1. Check for standalone binary (PATH, ~/.local/bin, etc.)
         cdl_bin = shutil.which("cyberdrop-dl") or shutil.which("cyberdrop-dl.exe")
         if not cdl_bin:
             local_candidate = Path.home() / ".local" / "bin" / "cyberdrop-dl.exe"
@@ -264,19 +260,50 @@ class EngineUpdater:
 
         if cdl_bin:
             try:
-                res = subprocess.run([cdl_bin, "--version"], capture_output=True, text=True, check=False, timeout=10)
-                ver_str = res.stdout.strip().splitlines()[-1] if res.stdout else "active"
-                # If uv or uvx tool exists, attempt upgrade
+                # Capture version before upgrade attempt
+                res_before = subprocess.run([cdl_bin, "--version"], capture_output=True, text=True, check=False, timeout=10)
+                raw_ver_before = res_before.stdout.strip().splitlines()[-1] if res_before.stdout else ""
+                v_before = raw_ver_before.split()[-1].lstrip("v") if raw_ver_before else ""
+
+                # If uv or uvx tool exists, attempt upgrade of both package variants
                 uv_bin = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv.exe")
                 if Path(uv_bin).exists():
                     try:
-                        subprocess.run([uv_bin, "tool", "upgrade", "cyberdrop-dl"], capture_output=True, text=True, check=False, timeout=30)
+                        # Try cyberdrop-dl-patched first, then cyberdrop-dl
+                        up_res = subprocess.run([uv_bin, "tool", "upgrade", "cyberdrop-dl-patched"], capture_output=True, text=True, check=False, timeout=60)
+                        if up_res.returncode != 0:
+                            subprocess.run([uv_bin, "tool", "upgrade", "cyberdrop-dl"], capture_output=True, text=True, check=False, timeout=60)
                     except Exception:
                         pass
-                display_ver = "v" + ver_str if not ver_str.startswith("v") else ver_str
-                return True, f"Up to date ({Style.dim(display_ver)}) [{Style.dim(cdl_bin)}]"
+
+                # If pipx exists, attempt upgrade
+                pipx_bin = shutil.which("pipx")
+                if pipx_bin:
+                    try:
+                        subprocess.run([pipx_bin, "upgrade", "cyberdrop-dl-patched"], capture_output=True, text=True, check=False, timeout=60)
+                        subprocess.run([pipx_bin, "upgrade", "cyberdrop-dl"], capture_output=True, text=True, check=False, timeout=60)
+                    except Exception:
+                        pass
+
+                # Capture version after upgrade attempt
+                res_after = subprocess.run([cdl_bin, "--version"], capture_output=True, text=True, check=False, timeout=10)
+                raw_ver_after = res_after.stdout.strip().splitlines()[-1] if res_after.stdout else ""
+                v_after = raw_ver_after.split()[-1].lstrip("v") if raw_ver_after else ""
+
+                if v_before and v_after and v_before != v_after:
+                    return True, f"Updated ({Style.yellow(f'v{v_before}')} -> {Style.green(f'v{v_after}')}) [{Style.dim(cdl_bin)}]"
+                elif v_after:
+                    return True, f"Up to date ({Style.dim(f'v{v_after}')}) [{Style.dim(cdl_bin)}]"
+                else:
+                    return True, f"Up to date [{Style.dim(cdl_bin)}]"
             except Exception as e:
                 return True, f"Binary located [{Style.dim(cdl_bin)}]: {e}"
+
+        # 2. Fallback: check if installed in current Python environment via pip
+        if self._get_pkg_version("cyberdrop-dl-patched"):
+            return self._pip_upgrade("cyberdrop-dl-patched", "cyberdrop-dl-patched")
+        if self._get_pkg_version("cyberdrop-dl"):
+            return self._pip_upgrade("cyberdrop-dl", "cyberdrop-dl")
 
         return True, "Not installed (skipped)"
 

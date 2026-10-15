@@ -1,12 +1,14 @@
 {
-    "version": "4.4.0",
+    "version": "4.6.0",
     "general": {
         "download_dir": "downloads",
         "concurrent_downloads": 3,
         "organize_by_backend": true,
         "organize_by_site": true,
         "auto_detect_backend": true,
-        "retry_failed_attempts": 3
+        "retry_failed_attempts": 3,
+        "notifications": false,
+        "play_sound": false
     },
     "archive": {
         "enabled": true,
@@ -30,40 +32,78 @@
         "po_provider_port": 4416,
         "extractor_args": {
             "youtube": {
-                "formats": ["missing_pot"]
+                "formats": [
+                    "missing_pot"
+                ]
             }
         },
         "sponsorblock": false,
         "write_thumbnail": false,
-        "config_file": "configs/yt-dlp.conf"
+        "config_file": "configs/yt-dlp.conf",
+        "preferred_resolution": "best",
+        "impersonate": null,
+        "concurrent_fragments": 1,
+        "subtitles_langs": [
+            "en"
+        ]
     },
     "gallery_dl": {
         "config_file": "configs/gallery-dl.json",
         "cookies_from_browser": null,
-        "fallback_browser_cookies": "firefox"
+        "fallback_browser_cookies": "firefox",
+        "sleep_request": 0.0,
+        "retries": 3
     },
     "cyberdrop_dl": {
         "max_simultaneous": 5,
         "use_domain_subfolders": true,
         "config_file": "configs/cyberdrop-dl.json",
-        "executable_path": "cyberdrop-dl"
+        "executable_path": "cyberdrop-dl",
+        "include_audio": true,
+        "include_video": true,
+        "include_images": true
     },
     "telegram_dl": {
         "api_id": "",
         "api_hash": "",
         "session_name": "telegram_dl_session",
         "github_repo": "https://github.com/Alex-0099/Telegram-dl.git",
-        "media_types": ["photo", "video", "document"],
+        "media_types": [
+            "photo",
+            "video",
+            "document"
+        ],
         "min_file_size_mb": 0,
         "max_file_size_mb": 0,
         "organize_by_chat": true,
-        "organize_by_type": true
+        "organize_by_type": true,
+        "flood_sleep_threshold": 60,
+        "config_file": "configs/telegram-dl.json"
     },
     "terabox_dl": {
         "github_repo": "https://github.com/Alex-0099/Terabox-DL.git",
         "ndus_cookie": "",
         "chunk_size_mb": 4,
         "max_threads": 4,
-        "auto_unpack": false
+        "auto_unpack": false,
+        "js_token": "",
+        "config_file": "configs/terabox-dl.json"
+    },
+    "network": {
+        "proxy": null,
+        "rate_limit": null,
+        "timeout": 30,
+        "user_agent": null
+    },
+    "engine_limits": {
+        "yt-dlp": 2,
+        "telegram-dl": 1,
+        "gallery-dl": 4,
+        "terabox-dl": 2,
+        "cyberdrop-dl": 2
+    },
+    "domain_limits": {
+        "max_per_domain": 3,
+        "enabled": true
     }
 }

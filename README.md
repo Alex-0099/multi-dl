@@ -2,12 +2,14 @@
 
 > A modern, unified multi-platform downloader orchestrating [`yt-dlp`](https://github.com/yt-dlp/yt-dlp), [`gallery-dl`](https://github.com/mikf/gallery-dl), [`terabox-dl`](https://github.com/Alex-0099/Terabox-DL), [`telegram-dl`](https://github.com/Alex-0099/Telegram-dl), and [`cyberdrop-dl`](https://github.com/Cyberdrop-DL/cyberdrop-dl) with isolated configurations, shared SQLite deduplication archive, persistent priority queue, two-way automatic failover, and interactive terminal interface.
 
-**Current Version:** `v4.4.0`
+**Current Version:** `v4.6.0`
 
 ---
 
 ## 📋 Changelog
 
+* **v4.6.0 (Live Clipboard Watcher, Cross-Directory Resilience & Recovery)**: Real-time Clipboard Auto-Watcher (`watch` / `clipboard`) with auto-downloading and audio notifications, permanent cross-directory path anchoring (ensures identical behavior regardless of execution directory), failed download auto-recovery (`retry` / `data/failed_links.txt`), extended locker routing (`hotpic2.cc`, `hotpic.cc`), and gallery-dl cache isolation.
+* **v4.5.0 (Centralized Configuration & Proxy Architecture)**: Dot-notation config management (`multi-dl config set/get`), engine concurrency limits, per-domain connection throttling guards, network proxy testing (`multi-dl proxy test`), and sensitive credential masking.
 * **v4.4.0 (Unified Deduplication Archive & Container-Aware Smart Skipping)**: Central SQLite archive (`data/archive.db`), multi-tier container intelligence (skipping single media in 1ms while delegating playlists/bookmarks/albums to granular per-category item archives), `multi-dl archive` CLI management (`--list`, `--search`, `--remove`, `--clear`), `--force` and `--no-archive` flags, and native PowerShell runner (`multi-dl.ps1`).
 * **v4.3.0 (Concurrent Multi-Engine Queue & Dispatcher)**: Fast pre-routing ingestion, intelligent per-engine concurrency guards (Telegram max 1, yt-dlp max 2), atomic multi-stream progress canvas, retry handling, and consolidated batch summary reports.
 * **v4.x.x (`cyberdrop-dl`)**: Subprocess engine integration for file lockers & forums, live SQLite progress tracking, directory hierarchy normalization, existing-file skip detection, and bidirectional failover.
@@ -126,12 +128,33 @@ python multi-dl.py queue clear
 python multi-dl.py queue clear --status completed
 ```
 
-### 4. Interactive Mode (TUI)
+### 4. Interactive Mode & Shell Command Center
 Launch an interactive session to paste single URLs, multiple pasted links, or paths to `.txt` files:
 ```powershell
-python multi-dl.py -i
+.\multi-dl
 # or
-python multi-dl.py interactive
+python multi-dl.py -i
+```
+
+Inside the interactive prompt, you can type natural commands directly without prefixing `:`:
+* `watch` — Monitor system clipboard in real time: copy any media link in your browser to auto-capture & download!
+* `retry` — Re-queue and download failed links from previous session (`data/failed_links.txt`).
+* `open` — Open the `downloads\` folder in Windows File Explorer (`os.startfile`).
+* `archive` — View SQLite archive metrics (total downloads, size) and recent entries table.
+* `queue` — View pending and queued downloads.
+* `clear` — Clear terminal screen and redraw the clean cyan banner.
+* `config` — Display active configuration settings, workers, and deduplication rules.
+* `update` — Check and update all download engines directly from the prompt.
+* `help` — Show the interactive command cheatsheet.
+* `exit` — Exit the interactive session cleanly (or `Ctrl+C`).
+
+**Dedicated CLI shortcuts:**
+```powershell
+# Live clipboard monitor (polls clipboard, plays audio chime, and auto-downloads):
+.\multi-dl watch
+
+# Re-download failed links from previous batch:
+.\multi-dl retry
 ```
 
 ### 5. Engine Authentication Wizard

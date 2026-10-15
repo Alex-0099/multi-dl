@@ -27,6 +27,9 @@ data/*.db
 data/archives/
 data/queue.json
 data/batch_queue.json
+data/live_queue.json
+data/failed_links.txt
+data/clipboard_history.txt
 *.log
 
 # Distribution / packaging
@@ -42,3 +45,4 @@ tools/
 testing.txt
 ytdlpdata.txt
 gallery-dl/
+urls.txt

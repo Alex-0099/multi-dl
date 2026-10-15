@@ -78,6 +78,12 @@ class URLRouter:
         "vipergirls.to": "gallery-dl",
 
         # cyberdrop-dl (Primary for deep forum threads and hosts without gallery-dl support)
+        "hotpic.cc": "cyberdrop-dl",
+        "www.hotpic.cc": "cyberdrop-dl",
+        "hotpic2.cc": "cyberdrop-dl",
+        "www.hotpic2.cc": "cyberdrop-dl",
+        "2385290.xyz": "cyberdrop-dl",
+        "myhostdata.space": "cyberdrop-dl",
         "saint.to": "cyberdrop-dl",
         "f95zone.to": "cyberdrop-dl",
         "mega.nz": "cyberdrop-dl",
@@ -151,6 +157,21 @@ class URLRouter:
         raise UnsupportedURLError(f"No backend available to handle URL: {url}")
 
     @classmethod
+    def match(cls, url: str):
+        """
+        Convenience matching helper returning an object with .backend attribute and str representation.
+        """
+        backend_name = cls.detect_backend_name(url)
+        class MatchResult:
+            def __init__(self, b: str):
+                self.backend = b
+            def __str__(self):
+                return self.backend
+            def __repr__(self):
+                return f"<MatchResult backend='{self.backend}'>"
+        return MatchResult(backend_name)
+
+    @classmethod
     def detect_backend_name(cls, url: str, backend_override: Optional[str] = None) -> str:
         """
         Lightweight, fast detection of backend engine name without instantiating heavy backends.
@@ -210,6 +231,10 @@ class URLRouter:
                 return "gallery-dl"
         except Exception:
             pass
+
+        # Cyberdrop-dl hosts (hotpic, etc.)
+        if any(h in domain for h in ("hotpic", "saint.to", "f95zone", "puter.com", "streamtape")):
+            return "cyberdrop-dl"
 
         # Image/gallery heuristic vs video/audio
         if any(img in domain for img in ("image", "photo", "pic", "gallery", "album", "danbooru", "gelbooru")):
@@ -407,3 +432,48 @@ class URLRouter:
                 return False
 
         return False
+
+
+def parse_resolution_height(resolution_str: Optional[str]) -> Optional[int]:
+    """Extracts integer pixel height from resolution string like '1080p', '1080', '720p', '4k', etc."""
+    if not resolution_str:
+        return None
+    r = str(resolution_str).strip().lower()
+    if r in ("4k", "2160", "2160p", "uhd"):
+        return 2160
+    if r in ("2k", "1440", "1440p", "qhd"):
+        return 1440
+    if r in ("1080", "1080p", "fhd"):
+        return 1080
+    if r in ("720", "720p", "hd"):
+        return 720
+    if r in ("480", "480p", "sd"):
+        return 480
+    if r in ("360", "360p"):
+        return 360
+    import re
+    digits = re.findall(r"\d+", r)
+    if digits:
+        return int(digits[0])
+    return None
+
+
+def resolve_format_spec(
+    format_str: Optional[str] = None,
+    resolution: Optional[str] = None,
+    audio_only: bool = False,
+    video_only: bool = False,
+) -> Optional[str]:
+    """Generates optimal yt-dlp format specification from format string, resolution, or type filters."""
+    if format_str:
+        return format_str
+    if audio_only:
+        return "bestaudio/best"
+    height = parse_resolution_height(resolution)
+    if video_only:
+        if height:
+            return f"bestvideo[height<={height}]/best[height<={height}]"
+        return "bestvideo/best"
+    if height:
+        return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+    return None

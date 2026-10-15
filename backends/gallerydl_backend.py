@@ -24,6 +24,7 @@ from core.models import ArchiveEntry, DownloadProgress, DownloadTask, MediaType
 from core.terminal import Style, format_bytes
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _active_trackers = threading.local()
 
 
@@ -43,6 +44,9 @@ class _GalleryDlLogHandler(logging.Handler):
             if tracker and tracker.progress_callback:
                 prefix = "ERROR" if record.levelno >= logging.ERROR else "WARNING"
                 tracker.on_warning(f"{prefix}: {clean_msg}")
+                return
+
+            if tracker and tracker.quiet:
                 return
 
             if record.levelno >= logging.ERROR:
@@ -65,6 +69,7 @@ class _GalleryDlBatchTracker:
         self.progress_callback = progress_callback
         self.quiet = quiet
         self.album_title: str = ""
+        self.extractor_name: str = ""
         self.total_files: Optional[int] = None
         self.completed_count: int = 0
         self.skipped_count: int = 0
@@ -99,6 +104,8 @@ class _GalleryDlBatchTracker:
                 total_files=self.total_files,
                 file_index=self.completed_count,
                 status_message=clean_tag,
+                extractor=self.extractor_name,
+                container_title=self.album_title,
             )
             self.progress_callback(prog)
 
@@ -148,6 +155,11 @@ class _GalleryDlBatchTracker:
 
         if title:
             self.album_title = str(title)
+
+        cat = kwdict.get("category") or kwdict.get("_extractor") or kwdict.get("subcategory")
+        if cat and not self.extractor_name:
+            self.extractor_name = str(cat).lower()
+
         if title and not self.title_announced:
             self.title_announced = True
             if not self.quiet:
@@ -164,6 +176,8 @@ class _GalleryDlBatchTracker:
                     total_files=self.total_files,
                     file_index=self.completed_count,
                     status_message=msg,
+                    extractor=self.extractor_name,
+                    container_title=self.album_title,
                 )
             )
 
@@ -204,6 +218,11 @@ class _GalleryDlBatchTracker:
         self.current_downloaded = 0
         self.current_total = None
 
+        if not self.extractor_name:
+            cat = kwdict.get("category") or kwdict.get("_extractor") or kwdict.get("subcategory")
+            if cat:
+                self.extractor_name = str(cat).lower()
+
         if self.progress_callback and not self.completed_count:
             self.progress_callback(
                 DownloadProgress(
@@ -211,6 +230,8 @@ class _GalleryDlBatchTracker:
                     total_files=self.total_files,
                     file_index=self.completed_count,
                     status_message=f"Preparing: {fname}" if fname else "Queueing media URLs",
+                    extractor=self.extractor_name,
+                    container_title=self.album_title,
                 )
             )
 
@@ -247,6 +268,8 @@ class _GalleryDlBatchTracker:
                 total_files=self.total_files,
                 file_index=self.completed_count,
                 status_message=self.current_filename,
+                extractor=self.extractor_name,
+                container_title=self.album_title,
             )
             self.progress_callback(prog)
 
@@ -264,18 +287,24 @@ class _GalleryDlBatchTracker:
             self.current_downloaded = self.current_total
             self._file_bytes[p.name] = self.current_total
 
+        is_completed = bool(self.total_files and self.completed_count >= self.total_files)
+        status_msg = "Finalizing archive..." if is_completed else p.name
+        reported_speed = None if is_completed else self.current_speed
+
         if self.progress_callback:
             tot_b = sum(self._file_bytes.values())
-            pct = ((self.completed_count / self.total_files) * 100.0) if self.total_files else None
+            pct = 100.0 if is_completed else (((self.completed_count / self.total_files) * 100.0) if self.total_files else None)
             prog = DownloadProgress(
                 downloaded_bytes=tot_b,
                 total_bytes=None,
-                speed_bytes_sec=self.current_speed,
+                speed_bytes_sec=reported_speed,
                 percent=pct,
                 current_file=self.album_title or p.name,
                 total_files=self.total_files,
                 file_index=self.completed_count,
-                status_message=p.name,
+                status_message=status_msg,
+                extractor=self.extractor_name,
+                container_title=self.album_title,
             )
             self.progress_callback(prog)
 
@@ -292,18 +321,22 @@ class _GalleryDlBatchTracker:
         if p.exists():
             self._file_bytes[p.name] = p.stat().st_size
 
+        is_completed = bool(self.total_files and self.completed_count >= self.total_files)
+        status_msg = "Finalizing archive..." if is_completed else f"Skipped: {p.name}"
+        reported_speed = None if is_completed else self.current_speed
+
         if self.progress_callback:
             tot_b = sum(self._file_bytes.values())
-            pct = ((self.completed_count / self.total_files) * 100.0) if self.total_files else None
+            pct = 100.0 if is_completed else (((self.completed_count / self.total_files) * 100.0) if self.total_files else None)
             prog = DownloadProgress(
                 downloaded_bytes=tot_b,
                 total_bytes=None,
-                speed_bytes_sec=self.current_speed,
+                speed_bytes_sec=reported_speed,
                 percent=pct,
                 current_file=self.album_title or p.name,
                 total_files=self.total_files,
                 file_index=self.completed_count,
-                status_message=f"Skipped: {p.name}",
+                status_message=status_msg,
             )
             self.progress_callback(prog)
 
@@ -319,6 +352,18 @@ class _GalleryDlBatchTracker:
 
     def finish(self) -> None:
         """Finalizes the dual progress display when download completes."""
+        if self.progress_callback:
+            tot_b = sum(self._file_bytes.values()) if self._file_bytes else 0
+            self.progress_callback(DownloadProgress(
+                downloaded_bytes=tot_b,
+                total_bytes=None,
+                speed_bytes_sec=None,
+                percent=100.0,
+                current_file=self.album_title,
+                total_files=self.total_files,
+                file_index=self.total_files or self.completed_count,
+                status_message="Finalizing archive...",
+            ))
         if not self.quiet:
             self._render(done=True)
 
@@ -522,22 +567,37 @@ class GalleryDlBackend(BaseBackend):
                 if cfg_path.exists():
                     gdl_config.load([str(cfg_path.resolve())])
 
-                # Configure fine-grained progress notification for http and ytdl downloaders (100ms interval)
+                # Configure fine-grained progress notification and network timeouts
                 gdl_config.set(("downloader", "http"), "progress", 0.1)
+                gdl_config.set(("downloader", "http"), "timeout", 20.0)
+                gdl_config.set(("downloader", "http"), "retries", 4)
                 gdl_config.set(("downloader", "ytdl"), "progress", 0.1)
+                gdl_config.set(("downloader", "ytdl"), "timeout", 20.0)
+                gdl_config.set(("downloader", "ytdl"), "retries", 4)
                 gdl_config.set(("output",), "shorten", False)
 
                 # Disable netrc lookups to prevent unwanted 'No authentication info' warnings
                 gdl_config.set((), "netrc", False)
                 GalleryDlBackend._configured = True
 
+            # Anchor cache database file to PROJECT_ROOT / data / cache.sqlite3
+            cache_file = PROJECT_ROOT / "data" / "cache.sqlite3"
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            gdl_config.set(("cache",), "file", str(cache_file.resolve()))
+
             # Dynamic archive configuration based on task options and global setting
             if disable_archive:
                 gdl_config.set(("extractor",), "archive", None)
             else:
-                Path("data/archives").mkdir(parents=True, exist_ok=True)
-                if not gdl_config.get(("extractor",), "archive"):
-                    gdl_config.set(("extractor",), "archive", ["data", "archives", "{category}.sqlite3"])
+                archive_dir = PROJECT_ROOT / "data" / "archives"
+                archive_dir.mkdir(parents=True, exist_ok=True)
+                arc = gdl_config.get(("extractor",), "archive")
+                if not arc or arc == ["data", "archives", "{category}.sqlite3"]:
+                    gdl_config.set(("extractor",), "archive", [str(archive_dir), "{category}.sqlite3"])
+                elif isinstance(arc, list) and arc and not Path(arc[0]).is_absolute():
+                    gdl_config.set(("extractor",), "archive", [str(PROJECT_ROOT / arc[0])] + arc[1:])
+                elif isinstance(arc, str) and not Path(arc).is_absolute():
+                    gdl_config.set(("extractor",), "archive", str((PROJECT_ROOT / arc).resolve()))
 
             # Enforce MULTI_DOWNLOADER output directory override
             if out_dir:
@@ -565,8 +625,12 @@ class GalleryDlBackend(BaseBackend):
             else:
                 profile, _, container = profile.partition("::")
             gdl_config.set((), "cookies", (browser, profile or None, keyring, container, domain))
-        elif cookie_file and Path(cookie_file).exists():
-            gdl_config.set((), "cookies", str(Path(cookie_file).resolve()))
+        elif cookie_file:
+            cf_path = Path(cookie_file)
+            if not cf_path.is_absolute():
+                cf_path = PROJECT_ROOT / cf_path
+            if cf_path.exists():
+                gdl_config.set((), "cookies", str(cf_path.resolve()))
 
     def can_handle(self, url: str) -> bool:
         """Query gallery-dl's extractor registry for support."""
@@ -629,6 +693,22 @@ class GalleryDlBackend(BaseBackend):
 
             tracker = _GalleryDlBatchTracker(progress_callback=progress_callback, quiet=quiet)
             _active_trackers.current = tracker
+
+            # Apply proxy if configured
+            proxy = task.options.get("proxy") or self.config.get("proxy")
+            if proxy:
+                gdl_config.set((), "proxy", str(proxy))
+
+            # Apply media type filter
+            audio_only = bool(task.options.get("audio_only") or task.options.get("extract_audio"))
+            video_only = bool(task.options.get("video_only"))
+            images_only = bool(task.options.get("images_only") or task.options.get("image_only"))
+            if images_only:
+                gdl_config.set(("extractor",), "filter", "extension in ('jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif')")
+            elif video_only:
+                gdl_config.set(("extractor",), "filter", "extension in ('mp4', 'mkv', 'webm', 'mov', 'avi', 'flv', 'wmv')")
+            elif audio_only:
+                gdl_config.set(("extractor",), "filter", "extension in ('mp3', 'm4a', 'flac', 'wav', 'ogg', 'opus')")
 
             # Intercept warnings/errors from gallery-dl, downloader, and urllib network layers
             handler = _GalleryDlLogHandler()
@@ -696,8 +776,10 @@ class GalleryDlBackend(BaseBackend):
                     try:
                         from backends.cyberdrop_backend import CyberdropDlBackend
                         cdl = CyberdropDlBackend()
-                        if cdl.can_handle(task.url):
-                            print(f"\n{Style.tag('🔄', 'FAILOVER', Style.YELLOW)} gallery-dl encountered an error ({e}).")
+                        is_no_extractor = "NoExtractorError" in type(e).__name__ or str(e) in ("None", "")
+                        if cdl.can_handle(task.url) or is_no_extractor:
+                            err_hint = "no extractor" if is_no_extractor else str(e)
+                            print(f"\n{Style.tag('🔄', 'FAILOVER', Style.YELLOW)} gallery-dl encountered an issue ({err_hint}).")
                             print(f"{Style.tag('⚙️', 'FAILOVER', Style.CYAN)} Attempting automatic fallback with {Style.engine_badge('cyberdrop-dl')}...")
                             fallback_task = DownloadTask(
                                 url=task.url,
@@ -709,7 +791,8 @@ class GalleryDlBackend(BaseBackend):
                     except Exception:
                         pass
 
-                raise DownloadFailedError(f"gallery-dl download failed: {e}")
+                clean_err = "No extractor found for URL" if str(e) in ("None", "") or "NoExtractorError" in type(e).__name__ else str(e)
+                raise DownloadFailedError(f"gallery-dl download failed: {clean_err}")
 
         downloaded_files = tracker.downloaded_files if tracker else []
         skipped_files = tracker.skipped_files if tracker else []
@@ -719,7 +802,10 @@ class GalleryDlBackend(BaseBackend):
         files_to_check = downloaded_files if downloaded_files else skipped_files
         if files_to_check:
             primary_path = Path(files_to_check[0])
-            total_size = sum(Path(f).stat().st_size for f in files_to_check if Path(f).exists())
+            if tracker and tracker._file_bytes:
+                total_size = sum(tracker._file_bytes.values())
+            else:
+                total_size = sum(Path(f).stat().st_size for f in files_to_check if Path(f).exists())
             if len(files_to_check) == 1:
                 file_name = primary_path.name
                 file_path = str(primary_path.resolve())
@@ -735,10 +821,16 @@ class GalleryDlBackend(BaseBackend):
                     if total_size == 0 and cbz_candidates[0].exists():
                         total_size = cbz_candidates[0].stat().st_size
         else:
-            # Fallback if extractor downloaded directly or files were already present
-            primary_path = out_dir
+            # Fallback when no files were tracked by DownloadJob callbacks
             total_size = 0
-            file_name = out_dir.name
+            if tracker and tracker._file_bytes:
+                total_size = sum(tracker._file_bytes.values())
+
+            if total_size == 0:
+                raise DownloadFailedError(f"No media files found or extracted for URL: {task.url}")
+
+            primary_path = out_dir
+            file_name = Path(task.url.split("?")[0].rstrip("/")).name or "gallery-dl"
             file_path = str(out_dir.resolve())
 
         # If individual files were deleted by postprocessor, fall back to tracked download bytes
@@ -747,7 +839,7 @@ class GalleryDlBackend(BaseBackend):
             if tracker_bytes > total_size:
                 total_size = tracker_bytes
 
-        if total_size == 0 and Path(file_path).exists():
+        if total_size == 0 and file_path and Path(file_path).exists() and Path(file_path).resolve() != out_dir.resolve():
             p_check = Path(file_path)
             if p_check.is_file():
                 total_size = p_check.stat().st_size

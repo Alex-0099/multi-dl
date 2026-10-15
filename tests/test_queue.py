@@ -444,7 +444,7 @@ async def test_single_download_summary_printed(tmp_path, capsys):
     mock_gdl.download = AsyncMock(side_effect=mock_dl)
     router = URLRouter({"gallery-dl": mock_gdl})
 
-    cfg = ConfigManager()
+    cfg = ConfigManager(config_path=tmp_path / "config.json")
     cfg.set("general", "download_dir", str(tmp_path / "downloads"))
     archive = ArchiveManager(tmp_path / "archive.db")
 
@@ -458,4 +458,23 @@ async def test_single_download_summary_printed(tmp_path, capsys):
     assert "DOWNLOAD SUMMARY" in out
     assert "Completed" in out
     assert "Saved To:" in out
+
+
+def test_queue_get_pending_items(temp_queue_file):
+    qm = QueueManager(temp_queue_file)
+    i1 = qm.add("https://example.com/1", priority=1)
+    i2 = qm.add("https://example.com/2", priority=5)
+    i3 = qm.add("https://example.com/3", priority=2)
+    qm.mark_status(i1.id, TaskStatus.COMPLETED)
+
+    pending = qm.get_pending_items()
+    # i1 is completed, so only i2 (pri 5) and i3 (pri 2) are pending
+    assert len(pending) == 2
+    assert pending[0].id == i2.id
+    assert pending[1].id == i3.id
+
+    # Test limit
+    limited = qm.get_pending_items(limit=1)
+    assert len(limited) == 1
+    assert limited[0].id == i2.id
 

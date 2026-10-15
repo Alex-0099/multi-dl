@@ -97,11 +97,13 @@ def test_interactive_banner(capsys):
     multi_dl = importlib.import_module("multi-dl")
 
     multi_dl.print_banner(cfg, archive)
+    import re
     captured = capsys.readouterr().out
-
-    assert f"MULTI_DOWNLOADER v{multi_dl.__version__}" in captured
+    clean_captured = re.sub(r'\033\[[0-9;]*[a-zA-Z]', '', captured)
+    assert f"MULTI_DOWNLOADER v{multi_dl.__version__}" in clean_captured
     assert "Configuration" in captured
     assert "Interactive Mode" in captured
+    assert "Enter URLs (use space for multiple URLs)" in captured
     assert "Enter URL:" not in captured  # prompt is printed in input() loop
     assert "[yt-dlp]" in captured
     assert "[terabox-dl]" in captured
@@ -335,13 +337,19 @@ def test_print_batch_summary_alignment(capsys):
         failed_count=0,
         total_bytes=104857600,
         elapsed_seconds=45.0,
+        saved_paths=[
+            r"~downloads\gallery-dl\twitter\1.jpg",
+            r"~downloads\gallery-dl\twitter\2.jpg",
+            r"~downloads\gallery-dl\reddit\3.jpg",
+        ],
     )
     out_batch = capsys.readouterr().out
     b_clean = [re.sub(r'\033\[[0-9;]*[a-zA-Z]', '', line).strip() for line in out_batch.splitlines()]
     b_lines = [line for line in b_clean if line.startswith("║")]
-    assert len(b_lines) >= 4
+    assert len(b_lines) >= 5
     b_widths = [str_width(line) for line in b_lines]
     assert len(set(b_widths)) == 1, f"Mismatch in batch summary line widths: {b_widths}"
+    assert "• Saved To:" in out_batch
 
 
 def test_dynamic_slot_hiding_when_free(capsys):
@@ -379,7 +387,83 @@ def test_dynamic_slot_hiding_when_free(capsys):
     assert "2 completed" in out2
 
 
+def test_pending_queue_rendering_bounded_overflow(capsys):
+    """Verifies that the Pending Queue renders up to max_slots items + 1 overflow line."""
+    from core.terminal import MultiBarManager
+
+    mb = MultiBarManager(max_slots=3, is_tty=True)
+    mb.assign_slot("task-1", "gallery-dl", "Active Task 1")
+    mb.set_queue_counts(remaining=6, completed=0, failed=0)
+
+    # 5 pending items waiting in queue
+    pending = [
+        ("gallery-dl", "https://nhentai.net/g/111111/"),
+        ("gallery-dl", "https://nhentai.net/g/222222/"),
+        ("gallery-dl", "https://nhentai.net/g/333333/"),
+        ("yt-dlp", "https://youtube.com/watch?v=444444"),
+        ("telegram-dl", "https://t.me/c/555555/1"),
+    ]
+    mb.set_pending_items(pending)
+    mb.render(force=True)
+
+    out = capsys.readouterr().out
+    assert "Pending:" in out
+    # First 3 items must be visible
+    assert "111111" in out
+    assert "222222" in out
+    assert "333333" in out
+    # 4th and 5th items should be aggregated in overflow line
+    assert "444444" not in out
+    assert "555555" not in out
+    assert "[+2 links are pending]" in out
 
 
+def test_pending_queue_disappears_when_empty(capsys):
+    """Verifies that the Pending Queue section is omitted when no items are pending."""
+    from core.terminal import MultiBarManager
+
+    mb = MultiBarManager(max_slots=3, is_tty=True)
+    mb.assign_slot("task-1", "gallery-dl", "Active Task 1")
+    mb.set_queue_counts(remaining=1, completed=0, failed=0)
+    mb.set_pending_items([])
+    mb.render(force=True)
+
+    out = capsys.readouterr().out
+    assert "Pending:" not in out
+    assert "links are pending" not in out
 
 
+def test_slot_row1_extractor_and_container_format(capsys):
+    """Verifies that Row 1 of slot cards matches ddd.png: [Downloader]: [engine] • [extractor] • [container/album]."""
+    from core.terminal import MultiBarManager
+
+    mb = MultiBarManager(max_slots=3, is_tty=True)
+    # Slot 1: Active with erome album URL and resolved album title
+    mb.assign_slot("task-1", "gallery-dl", "https://www.erome.com/a/W2FMvOUd", extractor="erome", container_title="Live da moreninha")
+    mb.update_slot(
+        slot_id=1,
+        percent=83.3,
+        downloaded=44400000,
+        speed=192000,
+        file_index=5,
+        total_files=6,
+        status_message="qh2ZK7jV Live da moreninha g.mp4",
+        extractor="erome",
+        container_title="Live da moreninha",
+    )
+    # Remaining slots are idle
+    mb.set_queue_counts(remaining=15, completed=21, failed=0)
+    mb.render(force=True)
+
+    out = capsys.readouterr().out
+    assert "[Downloader]:" in out
+    assert "[gallery-dl]" in out
+    assert "[erome]" in out
+    assert "[Live da moreninha]" in out
+    # Line 2 file details
+    assert "83.3%" in out
+    assert "5/6" in out
+    assert "qh2ZK7jV" in out
+    # Idle slots 2 and 3 visible when remaining > active
+    assert "[idle]" in out
+    assert "connecting..." in out

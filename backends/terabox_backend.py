@@ -383,7 +383,11 @@ class TeraboxDlBackend(BaseBackend):
 
     def _prompt_ndus_cookie(self, reason: str = "") -> str:
         """Interactively prompts the user for their TeraBox NDUS cookie."""
+        existing = self.config.get("ndus_cookie") or self._resolve_ndus_cookie()
         print(f"\n{Style.tag('🍪', 'TERABOX AUTH', Style.CYAN)} {Style.bold('TeraBox account cookie (ndus) required.')}")
+        if existing:
+            masked = existing[:4] + "..." + existing[-4:] if len(existing) > 8 else "***"
+            print(f"   {Style.dim(f'Current configured cookie: {masked}')}")
         if reason:
             print(f"{Style.dim(f'   Notice: {reason}')}")
         print(f"{Style.dim('   How to get your ndus cookie:')}")
@@ -391,8 +395,14 @@ class TeraboxDlBackend(BaseBackend):
         print(f"{Style.dim('   2. Open Developer Tools (F12) -> Application / Storage -> Cookies -> terabox.com.')}")
         print(f"{Style.dim('   3. Locate the cookie named \"ndus\" and copy its Value.')}\n")
 
-        val = input(f"{Style.cyan('Enter TeraBox ndus cookie: ')}").strip()
+        prompt_label = "Enter TeraBox ndus cookie"
+        if existing:
+            prompt_label += " (press Enter to keep existing)"
+        val = input(f"{Style.cyan(prompt_label + ': ')}").strip()
         if not val:
+            if existing:
+                print(f"\n{Style.tag('ℹ️', 'TERABOX', Style.DIM)} Retaining existing cookie.\n")
+                return existing
             raise AuthenticationError("TeraBox download cancelled: No ndus cookie provided.")
 
         self.config["ndus_cookie"] = val
@@ -843,6 +853,9 @@ class TeraboxDlBackend(BaseBackend):
                                                 current_file=share_title if is_batch else filename,
                                                 file_index=idx,
                                                 total_files=total_files,
+                                                status_message=filename,
+                                                extractor="terabox",
+                                                container_title=share_title,
                                             )
                                             prog.update_percent()
                                             progress_callback(prog)
